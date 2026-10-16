@@ -79,7 +79,6 @@
     },
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
-    "updater:default",
     "process:default",
     "process:allow-restart",
     "process:allow-exit",

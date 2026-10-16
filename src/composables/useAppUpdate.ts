@@ -203,13 +203,13 @@ async function tryNativeUpdaterCheck(): Promise<{
 function humanizeUpdaterError(err: any): string {
   const msg = err?.message || String(err)
   if (/Cross-device link|os error 18|EXDEV|CrossesDevices/i.test(msg)) {
-    return '更新临时目录与软件不在同一磁盘。请把 ZError 安装到「应用程序」后再更新'
+    return '更新临时目录与软件不在同一磁盘。请把 AnswerNest 安装到「应用程序」后再更新'
   }
   if (/Invalid argument|os error 22|EINVAL/i.test(msg)) {
-    return '当前不是「应用程序」安装包（开发模式无法原地更新）。请用 DMG 把 ZError 装到 /Applications 后再测更新'
+    return '当前不是「应用程序」安装包（开发模式无法原地更新）。请用 DMG 把 AnswerNest 装到 /Applications 后再测更新'
   }
   if (/permission|denied|administrator|Failed to move/i.test(msg)) {
-    return '原地更新需要写入权限：请把 ZError 放到「应用程序」后再试；若弹出密码框请允许'
+    return '原地更新需要写入权限：请把 AnswerNest 放到「应用程序」后再试；若弹出密码框请允许'
   }
   return msg
 }

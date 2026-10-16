@@ -1,15 +1,18 @@
 
 
 <div align="center">
-  <img src="https://free.picui.cn/free/2026/03/30/69ca3ec05ae5f.ico" alt="ZError Logo" width="128">
+  <img src="docs/logo.png" alt="AnswerNest Logo" width="128">
   <br>
-  <h2>ZError</h3>
+  <h2>AnswerNest</h2>
   <span>支持OCS网课助手的AI题库管理软件</span>
 </div>
 
+> AnswerNest 基于 [Miaozeqiu/ZError](https://github.com/Miaozeqiu/ZError) 修改而来，遵循 MIT 许可证。
+> 感谢原作者的开源工作；下文截图来自上游项目，界面与本版本可能略有差异。
+
 ## 项目简介
 
-ZError是一款专为OCS网课助手设计的AI题库软件，可以方便地为OCS网课助手搭建本地AI题库。软件由Tauri架构开发，支持AI平台以及模型的自定义。
+AnswerNest是一款专为OCS网课助手设计的AI题库软件，可以方便地为OCS网课助手搭建本地AI题库。软件由Tauri架构开发，支持AI平台以及模型的自定义。
 
 ![软件首页](https://free.picui.cn/free/2025/11/09/691031b4dd824.png)
 
@@ -35,9 +38,11 @@ https://www.bilibili.com/video/BV12PSQBLE5G
 
 ## 安装方法
 
-1. 从[官网](https://app.zerror.cc/)下载最新版本
+1. 从 [Releases](https://github.com/AbyssRow/AnswerNest/releases) 下载最新版本（也可自行克隆源码用 `npm run tauri:build` 构建）
 2. 运行安装程序
 3. 运行软件
+
+从 ZError 迁移：首次启动时，如果检测到旧版数据目录（`%LOCALAPPDATA%\ZError`），会自动把题库、设置和模型配置**复制**到 `%LOCALAPPDATA%\AnswerNest`，旧目录原样保留，不会被删除。
 
 ## 许可证
 

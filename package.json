@@ -1,5 +1,5 @@
 {
-  "name": "zerror",
+  "name": "answernest",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,7 +10,6 @@
     "tauri": "node ./scripts/run-tauri.mjs",
     "tauri:dev": "node ./scripts/run-tauri.mjs dev",
     "tauri:build": "node ./scripts/run-tauri.mjs build",
-    "tauri:build:signed": "TAURI_SIGNING_PRIVATE_KEY=\"$PWD/src-tauri/keys/zerror.key\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=\"\" tauri build",
     "tauri:build:win": "scripts\\build-windows.cmd"
   },
   "dependencies": {

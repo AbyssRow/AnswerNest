@@ -847,7 +847,7 @@ if __name__ == '__main__':
     convert(sys.argv[1], sys.argv[2])
 "#;
     let mut tmp = std::env::temp_dir();
-    tmp.push("zerror_doc_to_docx.py");
+    tmp.push("answernest_doc_to_docx.py");
     {
         let mut f = std::fs::File::create(&tmp).map_err(|e| format!("{}", e))?;
         f.write_all(script.as_bytes())

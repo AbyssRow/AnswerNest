@@ -1,5 +1,5 @@
 [package]
-name = "zerror"
+name = "answernest"
 version = "2.2.7"
 description = "A Tauri App"
 authors = ["you"]
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "zerror_lib"
+name = "answernest_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -59,4 +59,3 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString", "
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-process = "2.0"
-tauri-plugin-updater = "2.0"

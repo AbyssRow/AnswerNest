@@ -53,15 +53,15 @@ fn ensure_tmpdir_same_volume_as_exe() {
 
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = exe.parent() {
-        candidates.push(dir.join(".zerror-updater-tmp"));
+        candidates.push(dir.join(".answernest-updater-tmp"));
     }
 
-    // .../Xxx.app/Contents/MacOS/zerror → 优先放在 .app 同级目录
+    // .../Xxx.app/Contents/MacOS/answernest → 优先放在 .app 同级目录
     let mut p = exe.clone();
     for _ in 0..4 {
         if p.extension().and_then(|e| e.to_str()) == Some("app") {
             if let Some(parent) = p.parent() {
-                candidates.push(parent.join(".zerror-updater-tmp"));
+                candidates.push(parent.join(".answernest-updater-tmp"));
             }
             break;
         }
@@ -71,7 +71,7 @@ fn ensure_tmpdir_same_volume_as_exe() {
         }
     }
 
-    // 外置卷：/Volumes/Name/... → /Volumes/Name/tmp/ZError-updater
+    // 外置卷：/Volumes/Name/... → /Volumes/Name/tmp/AnswerNest-updater
     let components: Vec<_> = exe.components().collect();
     if components.len() >= 3 {
         use std::path::Component;
@@ -82,7 +82,7 @@ fn ensure_tmpdir_same_volume_as_exe() {
                 let mut root = PathBuf::from("/");
                 root.push("Volumes");
                 root.push(vol);
-                candidates.push(root.join("tmp").join("ZError-updater"));
+                candidates.push(root.join("tmp").join("AnswerNest-updater"));
             }
         }
     }
@@ -95,7 +95,7 @@ fn ensure_tmpdir_same_volume_as_exe() {
             if meta.dev() == exe_dev {
                 std::env::set_var("TMPDIR", &candidate);
                 eprintln!(
-                    "[zerror] TMPDIR aligned for updater: {} (was on another volume)",
+                    "[answernest] TMPDIR aligned for updater: {} (was on another volume)",
                     candidate.display()
                 );
                 return;
@@ -104,7 +104,7 @@ fn ensure_tmpdir_same_volume_as_exe() {
     }
 
     eprintln!(
-        "[zerror] warning: could not align TMPDIR with executable volume ({}); updater may fail with Cross-device link",
+        "[answernest] warning: could not align TMPDIR with executable volume ({}); updater may fail with Cross-device link",
         exe.display()
     );
 }
@@ -227,12 +227,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init());
 
-    // updater / process 必须挂在 Builder 上（不要放进 setup），否则前端会报 plugin updater not found
+    // 自动更新已停用（更新源和签名密钥原属于上游 ZError 项目）：不注册 updater 插件。
+    // process 插件保留，仍用于重启/退出。必须挂在 Builder 上，不要放进 setup。
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
-        builder = builder
-            .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init());
+        builder = builder.plugin(tauri_plugin_process::init());
     }
 
     builder
@@ -307,10 +306,10 @@ pub fn run() {
                     use windows::Win32::UI::WindowsAndMessaging::{
                         FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
                     };
-                    let _mutex = CreateMutexW(None, false, w!("Global\\ZError_SingleInstance"));
+                    let _mutex = CreateMutexW(None, false, w!("Global\\AnswerNest_SingleInstance"));
                     let err = GetLastError();
                     if err.0 == ERROR_ALREADY_EXISTS.0 && !elevated_arg {
-                        let hwnd = FindWindowW(None, w!("ZError"));
+                        let hwnd = FindWindowW(None, w!("AnswerNest"));
                         if hwnd.0 != 0 {
                             let _ = ShowWindow(hwnd, SW_RESTORE);
                             let _ = SetForegroundWindow(hwnd);
@@ -320,7 +319,8 @@ pub fn run() {
                 }
                 let username =
                     crate::database::get_username().unwrap_or_else(|_| "Administrator".to_string());
-                let base_dir = format!("C:\\Users\\{}\\AppData\\Local\\ZError", username);
+                crate::database::migrate_legacy_data();
+                let base_dir = format!("C:\\Users\\{}\\AppData\\Local\\AnswerNest", username);
                 let db_path = format!("{}\\airesponses.db", base_dir);
 
                 let mut need_elevation = false;
@@ -353,7 +353,8 @@ pub fn run() {
             #[cfg(not(target_os = "windows"))]
             {
                 let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                let base_dir = format!("{}/.local/share/zerror", home_dir);
+                crate::database::migrate_legacy_data();
+                let base_dir = format!("{}/.local/share/answernest", home_dir);
                 let db_path = format!("{}/airesponses.db", base_dir);
 
                 if let Err(e) = std::fs::create_dir_all(&base_dir) {
@@ -392,7 +393,7 @@ pub fn run() {
                     tauri::image::Image::from_bytes(include_bytes!("../icons/128x128@2x.png"))
                         .expect("window icon png");
                 let built = tauri::WebviewWindowBuilder::new(app, "main", url)
-                    .title("ZError")
+                    .title("AnswerNest")
                     .inner_size(main_window_size.width, main_window_size.height)
                     .min_inner_size(main_window_size.min_width, main_window_size.min_height)
                     .center()

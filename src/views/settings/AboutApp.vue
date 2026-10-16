@@ -7,15 +7,9 @@
           <img class="app-icon-image" src="/icons/favicon.ico" alt="logo">
         </div>
         <div class="app-details">
-          <h3 class="app-name">ZError</h3>
+          <h3 class="app-name">AnswerNest</h3>
           <p class="app-version">版本 {{ currentVersion }}</p>
           <p class="app-description">支持OCS的AI题库</p>
-        </div>
-        <div class="app-actions">
-          <span v-if="updateStatus" class="update-status" :class="updateStatusType">{{ updateStatus }}</span>
-          <button class="link-btn" :disabled="isCheckingUpdate" @click="checkForUpdatesManually">
-            {{ isCheckingUpdate ? '检查中...' : '检查更新' }}
-          </button>
         </div>
       </div>
     </div>
@@ -122,9 +116,9 @@
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <h3 class="setting-title">官方网站</h3>
+            <h3 class="setting-title">上游官网</h3>
           </div>
-          <p class="setting-description">访问 ZError 官方网站</p>
+          <p class="setting-description">访问上游项目 ZError 的官方网站（本软件基于 ZError 修改）</p>
         </div>
         <div class="setting-control">
           <a href="https://app.zerror.cc" target="_blank" class="plain-link">app.zerror.cc</a>
@@ -137,9 +131,9 @@
             <svg width="16" height="16" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
               <path d="M630.125714 1001.033143l-78.774857-153.088H262.144l-24.868571 158.866286-155.794286-22.966858 21.284571-135.899428H0V694.857143h126.683429l59.830857-382.756572H0V159.012571h210.432L235.300571 0l155.794286 22.966857-21.284571 135.972572h389.705143L783.945143 0l155.794286 22.966857-20.918858 136.045714H1024v153.088h-128.731429L836.461714 694.857143H1024v153.088h-211.017143L785.92 1024l-155.794286-22.966857z m105.837715-689.005714H345.965714L285.988571 694.857143h265.289143l104.96 135.899428 79.725715-518.656z" fill="currentColor"/>
             </svg>
-            <h3 class="setting-title">QQ 频道</h3>
+            <h3 class="setting-title">上游 QQ 频道</h3>
           </div>
-          <p class="setting-description">加入 ZError QQ 频道，获取最新动态与交流支持</p>
+          <p class="setting-description">上游项目 ZError 的 QQ 频道，可交流使用经验</p>
         </div>
         <div class="setting-control">
           <a href="https://pd.qq.com/s/b0vebzqkc" target="_blank" class="plain-link">pd.qq.com/s/b0vebzqkc</a>
@@ -162,7 +156,7 @@
           <p class="setting-description">查看源代码、提交 Issue 或参与贡献</p>
         </div>
         <div class="setting-control">
-          <a href="https://github.com/Miaozeqiu/ZError" target="_blank" class="plain-link">github.com/Miaozeqiu/ZError</a>
+          <a href="https://github.com/AbyssRow/AnswerNest" target="_blank" class="plain-link">github.com/AbyssRow/AnswerNest</a>
         </div>
       </div>
 
@@ -172,7 +166,7 @@
             <svg t="1774599738280" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M899.2 136.533333H124.8A82.346667 82.346667 0 0 0 42.666667 218.666667v586.666666a82.346667 82.346667 0 0 0 82.133333 82.133334h774.4A82.346667 82.346667 0 0 0 981.333333 805.333333v-586.666666a82.346667 82.346667 0 0 0-82.133333-82.133334z m11.733333 668.8a11.733333 11.733333 0 0 1-11.733333 11.733334H124.8a11.733333 11.733333 0 0 1-11.733333-11.733334v-586.666666a11.733333 11.733333 0 0 1 11.733333-11.733334h774.4a11.733333 11.733333 0 0 1 11.733333 11.733334z" fill="currentColor"></path><path d="M343.68 267.093333a154.88 154.88 0 0 0-154.666667 154.666667 152.96 152.96 0 0 0 32 93.866667v207.573333a33.706667 33.706667 0 0 0 49.706667 29.653333l72.96-39.893333 72.746667 39.893333a36.48 36.48 0 0 0 16.213333 4.053334 33.92 33.92 0 0 0 33.706667-33.706667v-207.573333a154.453333 154.453333 0 0 0-122.666667-248.533334z m69.333333 423.04L359.68 661.333333a34.346667 34.346667 0 0 0-32.213333 0l-53.12 29.226667v-130.773333a152.746667 152.746667 0 0 0 138.666666 0z m-69.333333-167.04a101.333333 101.333333 0 1 1 101.333333-101.333333 101.333333 101.333333 0 0 1-101.333333 101.333333zM802.346667 476.8H573.013333a35.413333 35.413333 0 0 0 0 70.4h224a35.2 35.2 0 1 0 5.333334-70.4zM573.013333 413.866667h224a35.2 35.2 0 1 0 5.333334-70.4 21.333333 21.333333 0 0 0-5.333334 0h-224a35.413333 35.413333 0 0 0 0 70.4zM802.346667 610.133333a21.333333 21.333333 0 0 0-5.333334 0h-224a35.413333 35.413333 0 0 0 0 70.4h224a35.2 35.2 0 1 0 5.333334-70.4z" fill="currentColor"></path></svg>
             <h3 class="setting-title">开源许可证</h3>
           </div>
-          <p class="setting-description">本项目基于 MIT License 开源</p>
+          <p class="setting-description">本项目基于 MIT License 开源，上游项目为 Miaozeqiu/ZError</p>
         </div>
         <div class="setting-control">
           <a href="https://mit-license.org/" target="_blank" class="link-btn">MIT License</a>
@@ -230,15 +224,7 @@ const debugInfo = ref({
   availableApis: [] as string[]
 })
 
-const {
-  updateInfo,
-  currentVersion,
-  checkForUpdates,
-} = useAppUpdate()
-
-const isCheckingUpdate = ref(false)
-const updateStatus = ref('')
-const updateStatusType = ref<'success' | 'error' | ''>('')
+const { currentVersion } = useAppUpdate()
 
 const isLoadingRequestStats = ref(false)
 const requestStatsError = ref('')
@@ -692,36 +678,6 @@ const formatDateLabel = (dateKey: string) => {
 }
 
 
-const checkForUpdatesManually = async () => {
-  if (isCheckingUpdate.value) {
-    return
-  }
-
-  isCheckingUpdate.value = true
-  updateStatus.value = ''
-  updateStatusType.value = ''
-
-  try {
-    // 走统一更新流：弹窗 + 顶部进度条 + 自动下载
-    await checkForUpdates({ forceDialog: true })
-
-    if (updateInfo.value?.version) {
-      updateStatus.value = `发现新版本 ${updateInfo.value.version}`
-      updateStatusType.value = 'success'
-      return
-    }
-
-    updateStatus.value = '当前已是最新版本'
-    updateStatusType.value = 'success'
-  } catch (error) {
-    console.error('手动检查更新失败:', error)
-    updateStatus.value = '检查更新失败，请稍后重试'
-    updateStatusType.value = 'error'
-  } finally {
-    isCheckingUpdate.value = false
-  }
-}
-
 const openDebugPanel = async () => {
   try {
     if (environmentDetector.isTauriEnvironment()) {
@@ -813,29 +769,6 @@ const openDebugPanel = async () => {
   flex-direction: column;
   gap: 2px;
   flex: 1;
-}
-
-.app-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.update-status {
-  font-size: 11px;
-  line-height: 1.4;
-  text-align: right;
-}
-
-.update-status.success {
-  color: var(--color-success, #16a34a);
-}
-
-.update-status.error {
-  color: var(--color-danger, #dc2626);
 }
 
 .app-name {
@@ -1404,7 +1337,6 @@ const openDebugPanel = async () => {
     align-items: flex-start;
   }
 
-  .app-actions,
   .setting-control,
   .request-record-side {
     width: 100%;

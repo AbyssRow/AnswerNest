@@ -60,8 +60,8 @@ const emit = defineEmits<{
 const copySuccess = ref(false)
 
 const ocsConfig = [{
-  "name": "ZE题库(自建版)",
-  "homepage": "http://app.zerror.cc",
+  "name": "AnswerNest题库(自建版)",
+  "homepage": "https://github.com/AbyssRow/AnswerNest",
   "url": "http://localhost:3002/query",
   "method": "get",
   "type": "GM_xmlhttpRequest",

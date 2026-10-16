@@ -61,7 +61,7 @@
             </svg>
             <transition name="menu-pop">
               <div v-if="importMenuOpen" class="import-menu" @click.stop>
-                <button class="menu-item" @click="importSoftwareExportedFile">导入ZError导出的文件</button>
+                <button class="menu-item" @click="importSoftwareExportedFile">导入 AnswerNest / ZError 导出的文件</button>
               </div>
             </transition>
           </div>

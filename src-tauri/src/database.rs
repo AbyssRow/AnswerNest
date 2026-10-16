@@ -320,7 +320,7 @@ fn get_db_path() -> String {
     {
         let username = get_username().unwrap_or_else(|_| "Administrator".to_string());
         format!(
-            "C:\\Users\\{}\\AppData\\Local\\ZError\\airesponses.db",
+            "C:\\Users\\{}\\AppData\\Local\\AnswerNest\\airesponses.db",
             username
         )
     }
@@ -328,7 +328,55 @@ fn get_db_path() -> String {
     #[cfg(not(target_os = "windows"))]
     {
         let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{}/.local/share/zerror/airesponses.db", home_dir)
+        format!("{}/.local/share/answernest/airesponses.db", home_dir)
+    }
+}
+
+/// 返回 (旧版 ZError 数据目录, 当前 AnswerNest 数据目录)
+fn data_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
+    #[cfg(target_os = "windows")]
+    {
+        let username = get_username().unwrap_or_else(|_| "Administrator".to_string());
+        let base = std::path::PathBuf::from(format!("C:\\Users\\{}\\AppData\\Local", username));
+        (base.join("ZError"), base.join("AnswerNest"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let base = std::path::PathBuf::from(format!("{}/.local/share", home_dir));
+        (base.join("zerror"), base.join("answernest"))
+    }
+}
+
+/// 从旧版 ZError 的数据目录迁移题库和设置到 AnswerNest。
+/// 只在新目录还没有题库时执行，且只复制不删除，旧目录原样保留作为备份。
+pub fn migrate_legacy_data() {
+    let (legacy, current) = data_dirs();
+    if !legacy.is_dir() || current.join("airesponses.db").exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&current) {
+        println!("⚠️ 创建数据目录失败，跳过旧数据迁移: {}", e);
+        return;
+    }
+
+    // 题库、设置、模型配置（含 SQLite 的 WAL 附属文件）
+    for name in [
+        "airesponses.db",
+        "airesponses.db-wal",
+        "airesponses.db-shm",
+        "config.json",
+        "model_config.json",
+    ] {
+        let (src, dst) = (legacy.join(name), current.join(name));
+        if !src.is_file() || dst.exists() {
+            continue;
+        }
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => println!("✅ 已从旧版迁移: {}", name),
+            Err(e) => println!("⚠️ 迁移 {} 失败: {}", name, e),
+        }
     }
 }
 
@@ -1950,7 +1998,7 @@ mod tests {
 
     #[test]
     fn migrates_legacy_database_schema() {
-        let db_path = std::env::temp_dir().join(format!("zerror-migration-{}.db", Uuid::new_v4()));
+        let db_path = std::env::temp_dir().join(format!("answernest-migration-{}.db", Uuid::new_v4()));
         let db_path_str = db_path.to_string_lossy().to_string();
 
         {

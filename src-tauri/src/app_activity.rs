@@ -52,7 +52,7 @@ mod macos {
 }
 
 pub fn begin_server_activity() {
-    macos::start("ZError HTTP server answering requests");
+    macos::start("AnswerNest HTTP server answering requests");
 }
 
 pub fn end_server_activity() {

@@ -4,14 +4,14 @@
       <div class="app-logo">
         <img
           src="/icons/app-icon.png"
-          alt="ZError Logo"
+          alt="AnswerNest Logo"
           class="app-logo-img"
           width="20"
           height="20"
           draggable="false"
         />
       </div>
-      <div class="app-title">ZError</div>
+      <div class="app-title">AnswerNest</div>
     </div>
     
     <div class="header-center">

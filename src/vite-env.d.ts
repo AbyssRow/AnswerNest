@@ -11,6 +11,9 @@ declare global {
     };
     __TAURI_INTERNALS__?: any;
   }
+
+  /** 构建时由 vite.config.ts 从 src-tauri/tauri.conf.json 注入 */
+  const __APP_VERSION__: string
 }
 
 export {};

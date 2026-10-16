@@ -1,6 +1,10 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { resolve } from 'path';
+import { readFileSync } from 'fs';
+
+// 应用版本以 tauri.conf.json 为准，注入给前端（关于页等）
+const appVersion: string = JSON.parse(readFileSync(resolve(__dirname, 'src-tauri/tauri.conf.json'), 'utf8')).version;
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -8,6 +12,10 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [vue()],
+
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   
   resolve: {
     alias: {

@@ -24,7 +24,8 @@ export interface VersionInfo {
 
 export class VersionCheckService {
   private static readonly API_URL = 'https://webapi.zaizhexue.top/live/latest_version.json';
-  private static readonly CURRENT_VERSION = '2.2.7'; // 当前软件版本
+  // 构建时从 src-tauri/tauri.conf.json 注入，发布时只需改那里（和 Cargo.toml）
+  private static readonly CURRENT_VERSION = __APP_VERSION__;
 
   private static getApiUrls(): string[] {
     return [VersionCheckService.API_URL];

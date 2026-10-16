@@ -620,3 +620,39 @@ test('web search: answers only count as different when the final answers differ'
   assert.equal(answersDisagree([]), false)
   assert.match(buildSearchContextBlock('[1] x'), /最终答案里不要出现链接和来源[\s\S]*\[1\] x$/)
 })
+test('web search: judgement answers with different wording are not a disagreement', async () => {
+  const { extractComparableAnswer, answersDisagree } = await import('../src/services/webSearch')
+  const reply = (answer: string) => `分析过程\n{"answer": "${answer}"}`
+  const yes = ['正确', '对', '是', '真', '对的', '正确。', 'A. 正确', ' 对 ', '√', '✓', '✔', 'true', 'True', 'TRUE', 'T', 'Yes', 'right', 'correct', '答案：对', '答案是对', '最终答案：正确', '对。', '正确！', '（对）'.replace(/[（）]/g, '')]
+  const no = ['错误', '错', '否', '假', '不对', '不正确', '不是', '错误。', 'B. 错误', '×', '✗', '✘', 'false', 'False', 'F', 'No', 'wrong', 'incorrect', '答案：错', '答案是错误', '错。', '错误！']
+  for (const a of yes) assert.equal(extractComparableAnswer(reply(a)), 'judge:true', `true: ${a}`)
+  for (const a of no) assert.equal(extractComparableAnswer(reply(a)), 'judge:false', `false: ${a}`)
+  // every pair of "yes" wordings agrees, every pair of "no" wordings agrees, yes vs no disagrees
+  assert.equal(answersDisagree(yes.map(reply)), false)
+  assert.equal(answersDisagree(no.map(reply)), false)
+  for (const a of yes) for (const b of no) assert.equal(answersDisagree([reply(a), reply(b)]), true, `${a} vs ${b}`)
+  // "答案：是" is just "是", not an empty answer
+  assert.equal(extractComparableAnswer(reply('答案：是')), 'judge:true')
+  // an answer that is not JSON at all: the last line still counts
+  assert.equal(answersDisagree(['想了想\n答案：对', reply('正确'), '最终答案是：正确。']), false)
+  assert.equal(answersDisagree(['想了想\n答案：对', reply('错误')]), true)
+})
+test('web search: answer comparison ignores order, width, case, punctuation and option letters', async () => {
+  const { extractComparableAnswer, answersDisagree } = await import('../src/services/webSearch')
+  const reply = (answer: string) => `思考\n{"answer": "${answer}"}`
+  // multiple choice: option order does not matter
+  assert.equal(answersDisagree([reply('甲#乙#丙'), reply('丙#甲#乙')]), false)
+  assert.equal(answersDisagree([reply('甲#乙'), reply('甲#乙#丙')]), true)
+  // full-width characters, case and punctuation
+  assert.equal(answersDisagree([reply('ＡＢＣ　ｄｅ'), reply('abc de')]), false)
+  assert.equal(answersDisagree([reply('Meeting.'), reply('meeting')]), false)
+  assert.equal(answersDisagree([reply('3.14'), reply('3.14。')]), false)
+  assert.equal(answersDisagree([reply('3.14'), reply('3.15')]), true)
+  // option letters in front, in any width
+  assert.equal(answersDisagree([reply('C．传动角'), reply('C. 传动角'), reply('传动角')]), false)
+  assert.equal(answersDisagree([reply('A. 传动角'), reply('B. 压力角')]), true)
+  // a real answer that merely starts with a judgement word is kept whole
+  assert.notEqual(extractComparableAnswer(reply('是非曲直')), 'judge:true')
+  assert.notEqual(extractComparableAnswer(reply('对数函数')), 'judge:true')
+  assert.equal(answersDisagree([reply('对数函数'), reply('指数函数')]), true)
+})

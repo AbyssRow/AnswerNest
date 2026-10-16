@@ -348,11 +348,31 @@ export function extractComparableAnswer(response: string): string {
     const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
     answer = lines[lines.length - 1] || ''
   }
+  // 多选题的多个答案用 # 连接，顺序不同不算不同
   return answer
     .replace(/\\n/g, ' ')
-    .replace(/^\s*[A-Za-z][.、．:：)）]\s*/, '')
-    .replace(/[\s\p{P}\p{S}]+/gu, '')
-    .toLowerCase()
+    .split('#')
+    .map(normalizeAnswerPart)
+    .filter(Boolean)
+    .sort()
+    .join('#')
+}
+
+// 判断题的各种说法：同一个意思不算不一致
+const JUDGE_TRUE = new Set(['正确', '对', '是', '真', '对的', '正确的', '是的', '√', '✓', '✔', '☑', 'true', 't', 'yes', 'y', 'right', 'correct'])
+const JUDGE_FALSE = new Set(['错误', '错', '否', '假', '不对', '不正确', '不是', '错的', '错误的', '不对的', '×', '✗', '✘', '✕', '❌', 'false', 'f', 'no', 'n', 'wrong', 'incorrect'])
+
+function normalizeAnswerPart(part: string): string {
+  const base = part.normalize('NFKC').trim()
+    // 「答案：对」「最终答案是对」去掉引导语；只有「答案：是」时这个「是」就是答案本身，保留
+    .replace(/^(?:最终)?答案\s*[:：]?\s*(?:[是为]\s*(?=\S))?/, '')
+    .replace(/^[\s:：,，]+/, '')
+    .replace(/^\s*[A-Za-z][.、:：)）]\s*/, '')
+    .trim()
+  const key = base.replace(/[\s。.!！,，;；、]+$/g, '').toLowerCase()
+  if (JUDGE_TRUE.has(key)) return 'judge:true'
+  if (JUDGE_FALSE.has(key)) return 'judge:false'
+  return base.replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase()
 }
 
 /** 至少两个有内容的回答，并且最终答案不全相同 */

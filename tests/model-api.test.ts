@@ -361,6 +361,37 @@ test('GPT-6 is a reasoning family: no sampling params, max passes through, think
   const off = (await execute('openai-response', { modelId: 'gpt-6.1-sol', enableThinking: false, upstream: 'compatible' })).request.body
   assert.equal(off.reasoning, undefined)
 })
+test('third-party OpenAI-compatible relays get each model\'s official parameters, whatever the host', async () => {
+  const relay = { baseUrl: 'https://relay.example.com/v1' }
+  const chat = async (modelId: string, on: boolean) => (await execute('openai-chat', { ...relay, modelId, enableThinking: on })).request.body
+  // plain GPT keeps the classic parameters and never receives reasoning switches
+  for (const on of [false, true]) {
+    const body = await chat('gpt-4.1', on)
+    assert.deepEqual([body.temperature, body.top_p, body.max_tokens], [0, 0.8, 2048])
+    assert.equal(body.reasoning_effort, undefined)
+    assert.equal(body.enable_thinking, undefined)
+  }
+  // reasoning GPT / o-series: max_completion_tokens, no sampling, no Qwen-style switch, vendor prefix tolerated
+  for (const id of ['gpt-5', 'gpt-6.1-sol', 'o3', 'openai/gpt-5']) {
+    const off = await chat(id, false)
+    assert.ok(off.max_completion_tokens > 0, id)
+    for (const name of ['max_tokens', 'temperature', 'top_p', 'enable_thinking', 'reasoning_effort']) assert.equal(off[name], undefined, `${id} ${name}`)
+    assert.equal((await chat(id, true)).reasoning_effort, 'medium', id)
+  }
+  // Claude over the OpenAI-style endpoint: never both temperature and top_p; 4.6+ takes no sampling at all
+  for (const id of ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'anthropic/claude-opus-5-5']) {
+    const body = await chat(id, false)
+    assert.equal(body.temperature, undefined, id)
+    assert.equal(body.top_p, undefined, id)
+    assert.ok(body.max_tokens > 0, id)
+  }
+  const oldClaude = await chat('claude-sonnet-4-5', false)
+  assert.equal(oldClaude.temperature, 0)
+  assert.equal(oldClaude.top_p, undefined)
+  // Responses: non-reasoning GPT never gets a reasoning object, even when thinking is off on a relay
+  for (const on of [false, true]) assert.equal((await execute('openai-response', { ...relay, modelId: 'gpt-4.1', enableThinking: on })).request.body.reasoning, undefined)
+  assert.equal((await execute('openai-response', { ...relay, modelId: 'gpt-5', enableThinking: true })).request.body.reasoning.effort, 'medium')
+})
 test('decision model answers only choice and judgement questions', async () => {
   const { decisionKindFromPrompt, decisionCanAnswer, buildDecisionPayload, formatDecisionAnswer, decisionEndpoint } = await import('../src/services/decisionApi')
   const single = '【题目类型：单选题】\n【题目】\n1+1=?\n【选项】\nA. 2\nB. 3\n\n请作答'

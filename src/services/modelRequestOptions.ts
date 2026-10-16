@@ -21,7 +21,15 @@ export function applyModelRequestOptions(
     : ['api.siliconflow.cn', 'api.siliconflow.com'].includes(host) ? 'siliconflow'
     : host === 'api.x.ai' ? 'xai' : 'compatible'
   const upstream = config.upstream && config.upstream !== 'auto' ? config.upstream : detected
-  const reasoningModel = /^(o[134](?:-|$)|gpt-[56])/.test(payload.model || '')
+  // 中转站常带前缀（openai/gpt-5、anthropic/claude-...），按去掉前缀后的模型名判断官方参数规则
+  const bareId = String(payload.model || '').toLowerCase().replace(/^.*\//, '')
+  const reasoningModel = /^(o[134](?:-|$)|gpt-[56])/.test(bareId)
+  // 老 GPT 不是推理模型，不接受 reasoning / reasoning_effort
+  const plainGpt = /^(gpt-[34]|chatgpt)/.test(bareId)
+  const claudeId = /^claude-/.test(bareId)
+  // Claude 4.6 及之后的模型不再接受自定义采样参数（Haiku 5.5：temperature 只能是 1、top_p 只能是 0.99、top_k 一律拒绝）；
+  // 老 Claude 可以用 temperature，但 temperature 和 top_p 不能同时出现
+  const claudeNoSampling = claudeId && !/^claude-(?:3|opus-4(?!-[6-9])|sonnet-4(?!-[6-9])|haiku-4)/.test(bareId)
   const effort = thinking.effort
   // GPT-6 可以接受 max；更早的 OpenAI 推理模型最高到 high
   const openaiEffort = /^gpt-6/.test(payload.model || '') ? effort : effort === 'max' ? 'high' : effort
@@ -35,7 +43,16 @@ export function applyModelRequestOptions(
       delete payload.thinking
       delete payload.reasoning_effort
     }
-    if (upstream === 'openai') {
+    if (upstream === 'compatible') {
+      // 通用 OpenAI 兼容服务（中转站）：按模型名套用官方规则。Qwen 风格的开关不属于 OpenAI / Claude 模型。
+      if (reasoningModel || plainGpt || claudeId) { delete payload.enable_thinking; delete payload.thinking }
+      if (plainGpt) delete payload.reasoning_effort
+      if (claudeId) {
+        delete payload.top_p
+        if (claudeNoSampling) delete payload.temperature
+      }
+    }
+    if (upstream === 'openai' || (upstream === 'compatible' && reasoningModel)) {
       if (thinking.enable && reasoningModel) payload.reasoning_effort = openaiEffort
       if (reasoningModel) {
         payload.max_completion_tokens = payload.max_tokens
@@ -95,6 +112,7 @@ export function applyModelRequestOptions(
     if (!thinking.enable && (upstream !== 'compatible' || /gpt-6/.test(payload.model || ''))) delete payload.reasoning
     if (thinking.enable && upstream === 'openai' && !reasoningModel) delete payload.reasoning
     if (payload.reasoning && upstream === 'openai') payload.reasoning.effort = openaiEffort
+    if (plainGpt) delete payload.reasoning
     if (upstream === 'deepseek') payload.reasoning = { effort: thinking.enable ? (effort === 'medium' ? 'high' : effort) : 'none' }
     if (upstream === 'volcengine') {
       delete payload.reasoning

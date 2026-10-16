@@ -2,12 +2,12 @@
 
 ## 使用入口
 
-- 设置 → 模型设置 → 添加平台：可选择 13 个官方 API Key 平台预设，或填写自定义地址。
-- 选中平台 → **网络代理与请求头**：保存此平台的代理 URL 和额外请求头。
-- 添加 / 编辑本地模型 → **模型参数与上游兼容**：设置 Token 上限、Temperature、Top P、频率 / 存在惩罚、随机种子、停止序列、Top K、思考预算、Anthropic 思考模式，以及额外 JSON 参数和省略字段。
-- 选中平台 → **Batch API**：导入 JSONL 或从每行一个问题生成请求，提交后按需刷新、取消、下载结果和错误文件。
+- 设置 → 模型设置 → 右上角 **+**：先**选择提供商**（国际 / 国内 / 聚合网关 / 本地分组，可搜索）。已知提供商只需填 API Key，名称、接口地址、代理、请求头都收在「更多设置」里。
+- 没有你要的提供商时选 **自定义提供商**：说明它兼容哪种标准 API（OpenAI Chat Completions、OpenAI Responses 或 Anthropic Messages），再填接口地址和 API Key。自定义提供商默认不启用 Batch，也不会按地址套用其他厂商的参数方言；需要时可在模型的「更多参数」里手动选兼容方言。
+- 添加 / 编辑本地模型：新模型默认使用所选提供商的 API 协议。**思考**相关设置（开关、Anthropic 的思考方式、强度、预算）集中在一组里；预算只在支持它的提供商（Anthropic、通义百炼、硅基流动、自定义提供商）上出现。**更多参数**里是 Token 上限、Temperature、Top P、频率 / 存在惩罚、随机种子、停止序列、Top K，以及额外 JSON 参数和省略字段。
+- 模型右键 → **批量处理（Batch）**：只在有公开 Batch API 的提供商上出现（OpenAI、Anthropic、Mistral、Groq、通义百炼、OpenRouter）。选好模型，每行一个问题，提交后可关闭窗口，之后回来刷新状态、下载结果。
 
-远程目录模型仍遵循项目原有只读约定；可在同一平台添加本地模型来定制参数。平台代理与请求头是本地配置，远程目录同步时保留。
+远程目录模型仍遵循项目原有只读约定；可在同一平台添加本地模型来定制参数。平台的代理与请求头是本地配置，远程目录同步时保留。
 
 ## 网络与参数
 
@@ -33,8 +33,8 @@ API Base URL 可以是根地址、带版本号的地址、网关前缀或完整 
 
 | 提供商 | API Base URL | 本次处理 |
 | --- | --- | --- |
-| OpenAI | `https://api.openai.com/v1` | Chat / Responses，推理模型 Token 字段与采样限制，普通模型不发送非标准思考参数 |
-| Anthropic | `https://api.anthropic.com/v1` | `x-api-key`、`anthropic-version`，system 消息，工具与图像格式，预算 / 自适应思考 |
+| OpenAI | `https://api.openai.com/v1` | Chat / Responses，GPT-5 / GPT-6 与 o 系列按推理模型处理（`max_completion_tokens`、不发采样参数，GPT-6 的强度可到 max，关闭思考时不发 none / minimal），普通模型不发送非标准思考参数 |
+| Anthropic | `https://api.anthropic.com/v1` | `x-api-key`、`anthropic-version`，system 消息，工具与图像格式；思考按模型分别处理：4.7 及之后的模型（含 Haiku 5.5、Fable、Mythos）只支持自适应，旧模型和非 Claude 的兼容端点用固定预算；关不掉的模型（Opus 5.5、Fable、Mythos）不发 thinking，Sonnet 5.5 用 `between_tools`，Opus 5 / Sonnet 5 / Haiku 5.5 用 `disabled` |
 | DeepSeek | `https://api.deepseek.com/v1` | `thinking.type`，推理强度映射，思考模式采样限制，工具续接保留 reasoning_content |
 | 百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 保留 compatible-mode 路径，`enable_thinking`、`thinking_budget`、`top_k` |
 | Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | 官方 OpenAI 兼容接口，保留版本路径，思考强度；仅已知可关闭思考的模型发送 none |
@@ -46,15 +46,23 @@ API Base URL 可以是根地址、带版本号的地址、网关前缀或完整 
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` | 保留 paas/v4 路径、thinking.type、已知 GLM 强度及不能关闭思考的模型 |
 | 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` | 保留 api/v3 路径，Chat / Responses 的 thinking.type |
 | 硅基流动 | `https://api.siliconflow.cn/v1` | enable_thinking、thinking_budget、top_k |
+| Together AI / Fireworks / Cerebras / NVIDIA NIM | 各自官方 OpenAI 兼容地址 | 按通用 OpenAI 兼容处理，不发送厂商专有的思考开关 |
+| Ollama / LM Studio（本地） | `http://localhost:11434/v1`、`http://localhost:1234/v1` | 通用 OpenAI 兼容，无需 API Key |
 
 官方参考：[OpenAI Batch](https://developers.openai.com/api/reference/resources/batches/methods/create)、[Anthropic Batch](https://platform.claude.com/docs/en/api/messages/batches/create)、[Anthropic 思考](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)、[DeepSeek 思考](https://api-docs.deepseek.com/guides/thinking_mode/)、[百炼 Batch](https://help.aliyun.com/zh/model-studio/batch-inference)、[Gemini 兼容接口](https://ai.google.dev/gemini-api/docs/openai)、[OpenRouter 思考](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)、[Groq 兼容接口](https://console.groq.com/docs/openai)、[Mistral Batch](https://docs.mistral.ai/studio/batch-processing)、[xAI 思考](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[Kimi 思考](https://platform.kimi.com/docs/guide/use-thinking-models)、[智谱思考](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[方舟思考](https://docs.volcengine.com/docs/ark/deep-thinking?lang=en)、[硅基流动思考](https://docs.siliconflow.cn/docs/userguide/capabilities/reasoning)。
 
 ## Batch 支持范围
 
-- OpenAI 兼容文件式 Batch：上传 `/files`（purpose=batch），创建 `/batches`（24h），查询 / 取消任务，下载 output / error 文件。覆盖 OpenAI，以及文档采用相同流程的百炼、Groq；模型和端点是否开放由上游决定。
-- Anthropic：`/messages/batches` 直接提交 requests 数组；结束后下载 JSONL，成功和失败结果均在同一结果文件中。
-- Mistral：`/batch/jobs`、`input_files`、job 级 model 与独立状态字段；本次界面支持 Chat Batch。
-- Gemini 的 Batch 文件上传 / 下载不兼容 OpenAI Files，xAI 使用不同任务协议；这两种 Batch 尚未实现。DeepSeek、OpenRouter 等也不假设支持文件式 Batch。界面提示未自动适配，允许用户为明确支持兼容协议的中转手动选择。
+Batch 的规范由**提供商**决定，界面里不需要选协议。
+
+| 提供商 | 规范 | 说明 |
+| --- | --- | --- |
+| OpenAI、Groq、通义百炼 | OpenAI 文件式 | 上传 `/files`（purpose=batch），创建 `/batches`（24h），查询 / 取消，下载 output / error 文件。一个文件只能有一个模型，提交前会检查 |
+| Anthropic | Message Batches | `/messages/batches` 直接提交 requests；结束后下载 JSONL，成功和失败结果在同一个文件里 |
+| Mistral | Batch Jobs | `/batch/jobs`、`input_files`、job 级 model；支持 Chat |
+| OpenRouter | 自有 Batch API | 不上传文件，直接 `POST /batches`，body 为 `endpoint`、`model`、`requests:[{custom_id, body}]`；`endpoint` 和 `model` 必须写在 `requests` 之前，否则 400。传基础模型名，`:batch` 变体由 OpenRouter 自己解析（填了 `:batch` 会自动去掉）；`:online` 变体不支持。结果直接在查询响应的 `results` 里，没有取消接口，结果保留 30 天 |
+
+以下提供商也有 Batch，但规范不同，**尚未实现**：Gemini（原生 `batchGenerateContent`，Files 不兼容 OpenAI）、xAI（自有任务协议）、Together AI 与 Fireworks（自有接口，OpenAI Batch 路径未实现）、火山方舟（基于 TOS 的签名接口）、智谱（端点只能是 `/v4/chat/completions`）、SiliconFlow、Cerebras（私有预览，取消方式为 `DELETE`）。DeepSeek、Kimi、Perplexity、NVIDIA、Ollama、LM Studio 没有查到公开的 Batch API。这些提供商的模型右键菜单里不会出现「批量处理」。
 
 实时推理支持与 Batch 支持分开判断。没有加入 OAuth 登录、订阅会话或浏览器凭据复用。
 
@@ -70,9 +78,15 @@ Anthropic 输入示例：
 {"custom_id":"question-1","params":{"model":"your-claude-model-id","max_tokens":1024,"messages":[{"role":"user","content":"1+1 等于多少？"}]}}
 ```
 
+OpenRouter 输入示例（`model` 可省略，沿用所选模型）：
+
+```jsonl
+{"custom_id":"question-1","body":{"messages":[{"role":"user","content":"1+1 等于多少？"}]}}
+```
+
 客户端每批限制为 20 MiB / 50000 条，提交前验证全部 JSONL、唯一 custom_id、端点和非流式约束。导入的 body / params 原样使用，不自动套用当前选中模型参数；“从问题生成 JSONL”才会使用模型配置。上传 / 创建请求不会自动重试，创建结果不确定时会提示检查上游控制台，避免重复计费。
 
-任务记录保存在本地 `zerror.batchJobs.v1`，仅包含任务 ID、提供商 ID / 地址、状态和文件 ID 等元数据。关闭应用后上游任务继续运行；重新打开后可手动刷新。可用任务 ID 找回记录。平台地址改变后必须恢复原地址才能操作旧任务。Batch 结果下载为 JSONL，当前不会自动写入题库。
+任务记录保存在本地 `answernest.batchJobs.v1`（会读取旧版 `zerror.batchJobs.v1`），仅包含任务 ID、提供商 ID / 地址、状态和文件 ID 等元数据。关闭应用后上游任务继续运行；重新打开后可手动刷新。可用任务 ID 找回记录。平台地址改变后必须恢复原地址才能操作旧任务。Batch 结果下载为 JSONL，当前不会自动写入题库。
 
 ## 验证
 

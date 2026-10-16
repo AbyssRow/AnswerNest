@@ -224,6 +224,13 @@ test('OpenAI Batch lifecycle uploads multipart, creates job, retrieves, cancels 
   assert.ok(calls.at(-1).url.endsWith('/files/file-errors/content'))
   await assert.rejects(api.retrieve({ ...job, baseUrl: 'https://elsewhere/v1' }), /地址已变化/)
 })
+test('OpenAI-style Batch refuses mixed models before uploading anything', async () => {
+  const calls: string[] = []
+  const api = new BatchApi(platform, 'openai', async (url) => { calls.push(String(url)); return jsonResponse({ id: 'x' }) })
+  const other = { ...row, custom_id: 'two', body: { ...row.body, model: 'gpt-4.1' } }
+  await assert.rejects(api.create([row, other].map(x => JSON.stringify(x)).join('\n'), row.url), /同一个模型/)
+  assert.deepEqual(calls, [])
+})
 test('Anthropic Batch sends requests directly and downloads from a trusted relative path', async () => {
   const calls: any[] = []
   const api = new BatchApi(platform, 'anthropic', async (url, init) => {
@@ -313,6 +320,46 @@ test('batch UI helpers: status labels, download availability and endpoint by mod
   assert.equal(endpointForModel('openai', { apiProtocol: 'openai-response' }), '/v1/responses')
   assert.equal(endpointForModel('mistral', { apiProtocol: 'openai-response' }), '/v1/chat/completions')
   assert.equal(endpointForModel('openrouter', { apiProtocol: 'anthropic' }), '/v1/messages')
+})
+test('Anthropic thinking follows each Claude model family (adaptive-only models reject type enabled)', async () => {
+  const think = async (modelId: string, on: boolean, extra: any = {}) =>
+    (await execute('anthropic', { modelId, enableThinking: on, ...extra })).request.body
+  // 4.7+/5.x are adaptive-only, including Haiku 5.5, Fable and Mythos, and gateway-prefixed ids
+  for (const id of ['claude-haiku-5-5', 'claude-fable-5-1', 'claude-mythos-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'anthropic/claude-opus-5-5']) {
+    const body = await think(id, true)
+    assert.deepEqual(body.thinking, { type: 'adaptive' }, id)
+    assert.equal(body.output_config.effort, 'medium', id)
+  }
+  // effort max is a valid output_config.effort and must not be clamped to high
+  assert.equal((await think('claude-opus-5-5', true, { thinkingEffort: 'max' })).output_config.effort, 'max')
+  // legacy Claude and non-Claude Anthropic-compatible endpoints keep the manual budget
+  for (const id of ['claude-opus-4-5', 'claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-3-7-sonnet-20250219', 'claude-sonnet-4-20250514', 'kimi-for-coding', 'deepseek-chat']) {
+    assert.deepEqual((await think(id, true)).thinking, { type: 'enabled', budget_tokens: 1024 }, id)
+  }
+  assert.equal((await think('claude-sonnet-4-6', true)).thinking.type, 'adaptive')
+  // the user can still force a mode
+  assert.equal((await think('claude-opus-4-6', true, { thinkingMode: 'budget' })).thinking.type, 'enabled')
+  // turning thinking off: always-on models get no thinking field (disabled would be a 400)
+  for (const id of ['claude-opus-5-5', 'claude-fable-5', 'claude-mythos-5-1']) assert.equal((await think(id, false)).thinking, undefined, id)
+  assert.deepEqual((await think('claude-sonnet-5-5', false)).thinking, { type: 'between_tools' })
+  for (const id of ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5-5']) assert.deepEqual((await think(id, false)).thinking, { type: 'disabled' }, id)
+  // models that default to off need nothing; non-Claude models never get thinking when off
+  for (const id of ['claude-opus-4-8', 'claude-opus-4-5', 'kimi-for-coding']) assert.equal((await think(id, false)).thinking, undefined, id)
+})
+test('GPT-6 is a reasoning family: no sampling params, max passes through, thinking off never sends none/minimal', async () => {
+  const chat = (await execute('openai-chat', { modelId: 'gpt-6.1-sol', enableThinking: true, thinkingEffort: 'max' })).request.body
+  assert.equal(chat.reasoning_effort, 'max')
+  assert.equal(chat.temperature, undefined)
+  assert.equal(chat.top_p, undefined)
+  assert.equal(chat.max_tokens, undefined)
+  assert.ok(chat.max_completion_tokens > 0)
+  // older OpenAI reasoning families top out at high
+  assert.equal((await execute('openai-chat', { modelId: 'gpt-5.5', enableThinking: true, thinkingEffort: 'max' })).request.body.reasoning_effort, 'high')
+  const resp = (await execute('openai-response', { modelId: 'gpt-6-astra', enableThinking: true, thinkingEffort: 'high' })).request.body
+  assert.equal(resp.reasoning.effort, 'high')
+  assert.equal(resp.temperature, undefined)
+  const off = (await execute('openai-response', { modelId: 'gpt-6.1-sol', enableThinking: false, upstream: 'compatible' })).request.body
+  assert.equal(off.reasoning, undefined)
 })
 test('decision model answers only choice and judgement questions', async () => {
   const { decisionKindFromPrompt, decisionCanAnswer, buildDecisionPayload, formatDecisionAnswer, decisionEndpoint } = await import('../src/services/decisionApi')

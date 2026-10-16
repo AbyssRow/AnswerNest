@@ -53,6 +53,10 @@ export const providers: ProviderDef[] = [
   { id: 'volcengine', name: '火山方舟（北京）', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', apiStyle: 'openai-chat', upstream: 'volcengine', batch: null, group: 'china', keyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey' },
   { id: 'siliconflow', name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', apiStyle: 'openai-chat', upstream: 'siliconflow', batch: null, group: 'china', keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
   { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiStyle: 'openai-chat', upstream: 'openrouter', batch: 'openrouter', group: 'gateway', keyUrl: 'https://openrouter.ai/settings/keys' },
+  { id: 'together', name: 'Together AI', baseUrl: 'https://api.together.ai/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'international' },
+  { id: 'fireworks', name: 'Fireworks AI', baseUrl: 'https://api.fireworks.ai/inference/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'international' },
+  { id: 'cerebras', name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'international' },
+  { id: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'international' },
   { id: 'ollama', name: 'Ollama（本地）', baseUrl: 'http://localhost:11434/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'local', noKey: true },
   { id: 'lmstudio', name: 'LM Studio（本地）', baseUrl: 'http://localhost:1234/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'local', noKey: true },
 ]

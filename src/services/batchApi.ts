@@ -142,7 +142,8 @@ export class BatchApi {
       }
     }
     const models = new Set(rows.map(row => row.body!.model))
-    if (this.kind === 'mistral' && models.size !== 1) throw new Error('Mistral 每批必须使用同一个模型')
+    // OpenAI、Groq、百炼、Mistral 都要求一个文件里只能有一个模型；提交前检查，避免文件传上去才在创建任务时失败
+    if ((this.kind === 'mistral' || this.kind === 'openai') && models.size !== 1) throw new Error('每批必须使用同一个模型')
     const form = new FormData()
     form.append('purpose', 'batch')
     form.append('file', new Blob([rows.map(row => JSON.stringify(row)).join('\n')], { type: 'application/jsonl' }), 'batch.jsonl')

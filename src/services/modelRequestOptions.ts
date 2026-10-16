@@ -21,8 +21,10 @@ export function applyModelRequestOptions(
     : ['api.siliconflow.cn', 'api.siliconflow.com'].includes(host) ? 'siliconflow'
     : host === 'api.x.ai' ? 'xai' : 'compatible'
   const upstream = config.upstream && config.upstream !== 'auto' ? config.upstream : detected
-  const reasoningModel = /^(o[134](?:-|$)|gpt-5)/.test(payload.model || '')
+  const reasoningModel = /^(o[134](?:-|$)|gpt-[56])/.test(payload.model || '')
   const effort = thinking.effort
+  // GPT-6 可以接受 max；更早的 OpenAI 推理模型最高到 high
+  const openaiEffort = /^gpt-6/.test(payload.model || '') ? effort : effort === 'max' ? 'high' : effort
   if (kind === 'chat') {
     for (const [key, name] of [['frequencyPenalty', 'frequency_penalty'], ['presencePenalty', 'presence_penalty'], ['seed', 'seed']] as const) {
       if (typeof config[key] === 'number') payload[name] = config[key]
@@ -34,7 +36,7 @@ export function applyModelRequestOptions(
       delete payload.reasoning_effort
     }
     if (upstream === 'openai') {
-      if (thinking.enable && reasoningModel) payload.reasoning_effort = effort === 'max' ? 'high' : effort
+      if (thinking.enable && reasoningModel) payload.reasoning_effort = openaiEffort
       if (reasoningModel) {
         payload.max_completion_tokens = payload.max_tokens
         for (const name of ['max_tokens', 'temperature', 'top_p', 'presence_penalty', 'frequency_penalty', 'stop']) delete payload[name]
@@ -89,9 +91,10 @@ export function applyModelRequestOptions(
   if (kind === 'responses') {
     if (typeof config.maxTokens === 'number') payload.max_output_tokens = config.maxTokens
     // Non-reasoning models reject reasoning entirely; disabled means use server defaults.
-    if (!thinking.enable && upstream !== 'compatible') delete payload.reasoning
+    // GPT-6 不接受 none/minimal（Sol 两者都不接受），关闭思考时不能发 reasoning，否则整个请求 400
+    if (!thinking.enable && (upstream !== 'compatible' || /gpt-6/.test(payload.model || ''))) delete payload.reasoning
     if (thinking.enable && upstream === 'openai' && !reasoningModel) delete payload.reasoning
-    if (payload.reasoning && upstream === 'openai' && effort === 'max') payload.reasoning.effort = 'high'
+    if (payload.reasoning && upstream === 'openai') payload.reasoning.effort = openaiEffort
     if (upstream === 'deepseek') payload.reasoning = { effort: thinking.enable ? (effort === 'medium' ? 'high' : effort) : 'none' }
     if (upstream === 'volcengine') {
       delete payload.reasoning
@@ -105,17 +108,32 @@ export function applyModelRequestOptions(
   if (kind === 'anthropic') {
     delete payload.reasoning
     delete payload.thinking
-    if (thinking.enable && !config.extraBody?.thinking) {
-      const adaptive = config.thinkingMode === 'adaptive' || (config.thinkingMode !== 'budget' && /^claude-(?:(?:opus|sonnet)-4-[6-9]|(?:opus|sonnet)-5)/.test(payload.model))
-      if (adaptive) {
-        payload.thinking = { type: 'adaptive' }
-        payload.output_config = { effort: effort === 'max' ? 'high' : effort }
+    if (!config.extraBody?.thinking) {
+      // 去掉网关前缀（如 anthropic/claude-opus-5-5）再判断
+      const id = String(payload.model || '').toLowerCase().replace(/^.*\//, '')
+      const isClaude = /^claude-/.test(id)
+      // 只支持手动预算（type: enabled + budget_tokens）的老模型；4.7 及之后的模型直接拒绝 enabled
+      const extendedOnly = /^claude-(?:3|opus-4(?!-[6-9])|sonnet-4(?!-[6-9])|haiku-4)/.test(id)
+      // 关不掉的模型：发 disabled 会 400，只能不发 thinking
+      // 下面几类默认就开着思考，关闭时才需要显式声明
+      const sonnet55 = /^claude-sonnet-5-5(?:-|$)/.test(id)
+      const disabledOk = /^claude-(?:opus|sonnet)-5(?!-5(?:-|$))/.test(id) || /^claude-haiku-5-5/.test(id)
+      if (!thinking.enable) {
+        if (sonnet55) payload.thinking = { type: 'between_tools' }
+        else if (disabledOk) payload.thinking = { type: 'disabled' }
       } else {
-        const budget = config.thinkingBudget ?? 1024
-        if (!Number.isInteger(budget) || budget < 1024 || budget >= payload.max_tokens) {
-          throw new Error('Anthropic 思考预算必须至少为 1024 且小于最大输出 Token；自适应思考请用额外参数设置 thinking')
+        // 自动：Claude 新模型用自适应；老 Claude 用固定预算；非 Claude（DeepSeek、Kimi 的 Anthropic 兼容端点等）保持固定预算
+        const adaptive = config.thinkingMode === 'adaptive' || (config.thinkingMode !== 'budget' && isClaude && !extendedOnly)
+        if (adaptive) {
+          payload.thinking = { type: 'adaptive' }
+          payload.output_config = { effort }
+        } else {
+          const budget = config.thinkingBudget ?? 1024
+          if (!Number.isInteger(budget) || budget < 1024 || budget >= payload.max_tokens) {
+            throw new Error('Anthropic 思考预算必须至少为 1024 且小于最大输出 Token；自适应思考请用额外参数设置 thinking')
+          }
+          payload.thinking = { type: 'enabled', budget_tokens: budget }
         }
-        payload.thinking = { type: 'enabled', budget_tokens: budget }
       }
     }
     // Newer Claude models reject sampling controls; explicit overrides remain available below.

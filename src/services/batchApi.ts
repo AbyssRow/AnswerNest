@@ -2,7 +2,7 @@ import type { AIModel, AIPlatform } from './modelConfig'
 import { createProviderFetch, providerEndpoint, providerHeaders, type ProviderConnection } from './providerTransport'
 import { resolveExecutableModelJsCode } from './modelProtocol'
 
-export type BatchKind = 'openai' | 'anthropic' | 'mistral'
+export type BatchKind = 'openai' | 'anthropic' | 'mistral' | 'openrouter'
 export interface BatchRow { custom_id: string; method?: string; url?: string; body?: Record<string, any>; params?: Record<string, any> }
 export interface BatchJob {
   id: string
@@ -17,16 +17,6 @@ export interface BatchJob {
   errors?: unknown
 }
 export const BATCH_MAX_BYTES = 20 * 1024 * 1024
-
-export function suggestedBatchKind(platform: ProviderConnection, model?: AIModel): BatchKind | null {
-  if (model?.apiProtocol === 'custom' || model?.apiProtocol === 'decision') return null
-  if (model?.apiProtocol === 'anthropic') return 'anthropic'
-  const host = new URL(platform.baseUrl).hostname
-  if (host === 'api.mistral.ai') return 'mistral'
-  // These providers need different APIs or do not document this file-based contract.
-  if (['generativelanguage.googleapis.com', 'api.x.ai', 'api.deepseek.com', 'openrouter.ai'].includes(host)) return null
-  return 'openai'
-}
 
 export function parseBatchJsonl(text: string, kind: BatchKind, endpoint: string): BatchRow[] {
   if (new TextEncoder().encode(text).byteLength > BATCH_MAX_BYTES) throw new Error('当前导入上限为 20 MiB，请拆分文件')
@@ -44,18 +34,19 @@ export function parseBatchJsonl(text: string, kind: BatchKind, endpoint: string)
     ids.add(row.custom_id)
     if (row.method && row.method !== 'POST') fail('仅支持 POST')
     if (row.url && row.url !== endpoint) fail('请求端点与所选端点不一致')
-    const body = kind === 'anthropic' ? row.params ?? row.body : row.body
+    const body = kind === 'anthropic' ? row.params ?? row.body : kind === 'openrouter' ? row.body ?? row.params : row.body
     if (!body || typeof body !== 'object' || Array.isArray(body)) fail('缺少请求体 body / params')
-    if (typeof body.model !== 'string' || !body.model.trim()) fail('请求体缺少 model')
+    // OpenRouter 允许省略 model，沿用整批的模型；其他提供商必须写
+    if (!(kind === 'openrouter' && body.model === undefined) && (typeof body.model !== 'string' || !body.model.trim())) fail('请求体缺少 model')
     if (body.stream === true) fail('Batch 不支持流式输出，请移除 stream 或设置 false')
     if (endpoint === '/v1/responses') {
       if (!(typeof body.input === 'string' && body.input.length) && !(Array.isArray(body.input) && body.input.length)) fail('缺少 input')
     } else if (!Array.isArray(body.messages) || !body.messages.length) fail('缺少 messages')
-    if (kind === 'anthropic' && (!Number.isInteger(body.max_tokens) || body.max_tokens < 1)) fail('Anthropic 必须设置正整数 max_tokens')
+    if ((kind === 'anthropic' || endpoint === '/v1/messages') && (!Number.isInteger(body.max_tokens) || body.max_tokens < 1)) fail('Messages 接口必须设置正整数 max_tokens')
     const params = { ...body }
     delete params.stream
     rows.push(kind === 'anthropic' ? { custom_id: row.custom_id, params }
-      : kind === 'mistral' ? { custom_id: row.custom_id, body: params }
+      : kind === 'mistral' || kind === 'openrouter' ? { custom_id: row.custom_id, body: params }
         : { custom_id: row.custom_id, method: 'POST', url: endpoint, body: params })
   }
   if (!rows.length) throw new Error('请提供至少一条请求')
@@ -113,7 +104,7 @@ export class BatchApi {
       outputFileId: data.output_file_id || data.output_file || undefined,
       errorFileId: data.error_file_id || data.error_file || undefined,
       counts: data.request_counts || { total: data.total_requests ?? 0, completed: data.completed_requests ?? 0, failed: data.failed_requests ?? 0 },
-      errors: data.errors,
+      errors: data.errors ?? data.error ?? undefined,
     }
   }
   private assertJob(job: BatchJob) {
@@ -121,12 +112,28 @@ export class BatchApi {
       throw new Error('平台地址已变化，请恢复提交任务时的地址后再操作')
     }
   }
-  async create(text: string, endpoint: string, signal?: AbortSignal): Promise<BatchJob> {
+  async create(text: string, endpoint: string, signal?: AbortSignal, options: { model?: string } = {}): Promise<BatchJob> {
     if (!['/v1/chat/completions', '/v1/responses', '/v1/messages'].includes(endpoint)) throw new Error('不支持的 Batch 端点')
     if (this.kind === 'anthropic' && endpoint !== '/v1/messages') throw new Error('Anthropic Batch 仅支持 Messages')
     if (this.kind === 'mistral' && endpoint !== '/v1/chat/completions') throw new Error('Mistral Batch 当前支持 Chat')
     if (this.kind === 'openai' && endpoint === '/v1/messages') throw new Error('OpenAI 兼容 Batch 不支持 Messages')
     const rows = parseBatchJsonl(text, this.kind, endpoint)
+    if (this.kind === 'openrouter') {
+      // OpenRouter：不上传文件，直接 POST /batches。字段顺序有要求：endpoint、model 必须在 requests 之前。
+      // Batch API 接收的是基础模型 slug（:batch 变体由它自己解析），所以去掉用户可能带上的 :batch。
+      const base = (value: unknown) => String(value ?? '').trim().replace(/:batch$/, '')
+      const inRows = new Set(rows.map(row => row.body!.model).filter(model => model !== undefined).map(base))
+      const model = base(options.model ?? [...inRows][0])
+      if (!model) throw new Error('请指定要使用的模型')
+      if (model.endsWith(':online')) throw new Error('OpenRouter Batch 不支持 :online 变体')
+      if (inRows.size > 1 || (inRows.size === 1 && !inRows.has(model))) throw new Error('OpenRouter 每批只能用一个模型，且请求里的 model 必须和所选模型一致')
+      const requests = rows.map(row => { const body = { ...row.body }; delete body.model; return { custom_id: row.custom_id, body } })
+      try {
+        return this.normalize(await (await this.request(this.resource, { method: 'POST', body: JSON.stringify({ endpoint, model, requests }), signal })).json())
+      } catch (error) {
+        throw new Error(`创建任务未能确认，请先在 OpenRouter 控制台检查，避免重复提交。${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     if (this.kind === 'anthropic') {
       try {
         return this.normalize(await (await this.request(this.resource, { method: 'POST', body: JSON.stringify({ requests: rows }), signal })).json())
@@ -156,10 +163,19 @@ export class BatchApi {
   }
   async cancel(job: BatchJob, signal?: AbortSignal): Promise<BatchJob> {
     this.assertJob(job)
+    if (this.kind === 'openrouter') throw new Error('OpenRouter 的 Batch 没有取消接口；任务会在 24 小时内完成或过期')
     return this.normalize(await (await this.request(`${this.resource}/${encodeURIComponent(job.id)}/cancel`, { method: 'POST', signal })).json(), job)
   }
   async results(job: BatchJob, errors = false, signal?: AbortSignal): Promise<string> {
     this.assertJob(job)
+    if (this.kind === 'openrouter') {
+      // 结果直接包含在查询响应的 results 数组里，任务完成前是 null
+      const data = await (await this.request(`${this.resource}/${encodeURIComponent(job.id)}`, { signal })).json()
+      if (!Array.isArray(data.results)) throw new Error(`尚无结果（当前状态：${data.status ?? '未知'}）`)
+      const items = errors ? data.results.filter((item: any) => item?.error) : data.results
+      if (errors && !items.length) throw new Error('没有失败的请求')
+      return items.map((item: unknown) => JSON.stringify(item)).join('\n')
+    }
     if (this.kind === 'anthropic') {
       if (job.status !== 'ended') throw new Error('Anthropic 任务尚未结束')
       return (await this.request(`${this.resource}/${encodeURIComponent(job.id)}/results`, { signal })).text()

@@ -20,6 +20,8 @@ interface Props {
   x: number
   y: number
   model?: AIModel | null
+  /** 这个平台的提供商有 Batch API 时才显示「批量处理」 */
+  batchAvailable?: boolean
 }
 
 const props = defineProps<Props>()
@@ -27,6 +29,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   'edit-model': []
   'test-model': [{ testFunctionCalling: boolean }]
+  'batch-model': []
   'delete-model': []
   close: []
 }>()
@@ -93,6 +96,21 @@ const menuItems = computed<MenuItem[]>(() => {
     })
   }
 
+  if (props.batchAvailable && props.model?.apiProtocol !== 'custom' && props.model?.apiProtocol !== 'decision') {
+    items.push({
+      id: 'batch-model',
+      label: '批量处理（Batch，半价、异步）',
+      action: 'batch-model',
+      icon: {
+        type: 'svg',
+        paths: [
+          { d: 'M12 2l9 5-9 5-9-5 9-5z' },
+          { d: 'M3 12l9 5 9-5M3 17l9 5 9-5' }
+        ]
+      }
+    })
+  }
+
   if (!isRemote) {
     items.push(
       { type: 'divider' },
@@ -127,6 +145,9 @@ const handleItemClick = (item: MenuItem) => {
       break
     case 'test-model-fc':
       emit('test-model', { testFunctionCalling: true })
+      break
+    case 'batch-model':
+      emit('batch-model')
       break
     case 'delete-model':
       emit('delete-model')

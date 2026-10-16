@@ -15,8 +15,7 @@ export const numericModelOptions = [
   { key: 'frequencyPenalty', label: '频率惩罚', min: -2, max: 2, step: 0.1 },
   { key: 'presencePenalty', label: '存在惩罚', min: -2, max: 2, step: 0.1 },
   { key: 'seed', label: '随机种子', min: -2147483648, max: 2147483647, step: 1 },
-  { key: 'topK', label: 'Top K（百炼）', min: 1, max: 100000, step: 1 },
-  { key: 'thinkingBudget', label: '思考 Token 预算', min: 0, max: 2000000, step: 1 },
+  { key: 'topK', label: 'Top K', min: 1, max: 100000, step: 1 },
 ] as const
 
 export function collectModelOptions(values: Record<string, string | number>, extraText: string, stopText: string, omitText: string): Partial<AIModel> {

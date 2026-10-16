@@ -13,6 +13,8 @@ export interface AIPlatform {
   models: AIModel[]
   customHeaders?: Record<string, string>
   proxyUrl?: string // 空值沿用系统代理；支持 HTTP(S)/SOCKS5(H)
+  provider?: string // providerRegistry 里的提供商 id；'custom' 表示自定义（走标准 API）
+  apiStyle?: 'openai-chat' | 'openai-response' | 'anthropic' // 自定义提供商兼容的标准 API
   description?: string
   icon?: string        // 平台图标
   isRemote?: boolean   // 是否来自远程同步（禁止编辑/删除）

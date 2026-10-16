@@ -214,8 +214,6 @@
           </div>
         </div>
 
-        <ProviderConnectionSettings v-if="selectedPlatform" :key="selectedPlatform.id" :platform="selectedPlatform" @save="updates => updatePlatform(selectedPlatform!.id, updates)" />
-
         <!-- 模型管理 -->
         <div class="detail-section">
           <div class="section-header">
@@ -223,7 +221,6 @@
             <div class="header-actions">
               <!-- 模型分类筛选 -->
               <ModelCategorySwitch v-model="selectedCategory" />
-              <button class="batch-entry-btn" @click="showBatchDialog = true">Batch API</button>
               <!-- 添加模型按钮 -->
               <button class="icon-action-btn icon-action-btn--add icon-action-btn--model-add" @click="openQuickAdd" title="添加模型">
                 <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
@@ -317,13 +314,15 @@
       :x="modelContextMenuX"
       :y="modelContextMenuY"
       :model="contextMenuModel"
+      :batch-available="batchAvailable"
       @edit-model="handleEditModel"
+      @batch-model="handleBatchModel"
       @test-model="handleTestModel"
       @delete-model="handleDeleteModel"
       @close="hideModelMenu"
     />
 
-    <BatchJobsDialog v-if="showBatchDialog && selectedPlatform" :key="selectedPlatform.id" :platform="selectedPlatform" @close="showBatchDialog = false" />
+    <BatchJobsDialog v-if="showBatchDialog && selectedPlatform" :key="selectedPlatform.id + batchModelId" :platform="selectedPlatform" :model-id="batchModelId" @close="showBatchDialog = false" />
 
     <ModelConfigDialog
       :show="showModelConfigDialog"
@@ -378,7 +377,7 @@ import { resolveExecutableModelJsCode, resolveRuntimeModelId } from '../../servi
 import { environmentDetector } from '../../services/environmentDetector'
 import { getPlatformIconDisplayUrl, resolvePlatformIconUrl } from '../../services/iconCache'
 import BatchJobsDialog from './ModelSettings/BatchJobsDialog.vue'
-import ProviderConnectionSettings from './ModelSettings/ProviderConnectionSettings.vue'
+import { providerForPlatform, batchSpecForPlatform } from '../../services/providerRegistry'
 import PlatformConfigDialog from './ModelSettings/PlatformConfigDialog.vue'
 import PlatformContextMenu from './ModelSettings/PlatformContextMenu.vue'
 import ModelContextMenu from './ModelSettings/ModelContextMenu.vue'
@@ -1200,6 +1199,15 @@ const closeModelDialog = () => {
 }
 
 const showBatchDialog = ref(false)
+const batchModelId = ref('')
+// 只有提供商有公开的 Batch API 时才在模型右键菜单里出现「批量处理」
+const batchAvailable = computed(() => !!selectedPlatform.value && batchSpecForPlatform(selectedPlatform.value) !== null)
+const handleBatchModel = () => {
+  if (!contextMenuModel.value) return
+  batchModelId.value = contextMenuModel.value.id
+  showBatchDialog.value = true
+  hideModelMenu()
+}
 
 const saveModel = async (modelData: Partial<AIModel>) => {
   if (!selectedPlatform.value) return
@@ -1251,6 +1259,8 @@ const saveModel = async (modelData: Partial<AIModel>) => {
         thinkingOffThinkingTypeDisabled: modelData.thinkingOffThinkingTypeDisabled ?? false,
         thinkingOffResponsesEffort: modelData.thinkingOffResponsesEffort ?? 'minimal',
         thinkingEffort: modelData.thinkingEffort ?? 'medium',
+        // 参数适配跟着提供商走；自定义提供商由用户在「更多参数」里选
+        upstream: modelData.upstream ?? providerForPlatform(selectedPlatform.value)?.upstream,
         apiProtocol: modelData.apiProtocol
       }
       newModelCategory = newModelData.category
@@ -1884,15 +1894,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.batch-entry-btn {
-  border: 1px solid var(--border-color, #8885);
-  border-radius: 7px;
-  padding: 6px 10px;
-  background: var(--platform-config-dialog-bg);
-  color: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-}
 
 /* 模型设置布局样式 */
 .model-settings-container {

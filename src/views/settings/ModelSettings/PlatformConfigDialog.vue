@@ -1,19 +1,20 @@
-﻿﻿﻿﻿﻿﻿<template>
+<template>
   <div v-if="show" class="dialog-overlay" @click="handleOverlayClick">
     <div class="dialog-content" @click.stop>
       <div class="dialog-header">
-        <button class="btn-back" @click="$emit('close')" title="返回">
+        <button class="btn-back" @click="handleBack" :title="step === 'form' && !isEditing ? '重新选择提供商' : '返回'">
           <svg t="1774357412434" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="18" height="18">
             <path d="M768 96c19.2-19.2 19.2-51.2 0-70.4-19.2-19.2-51.2-19.2-70.4 0l-448 448c-19.2 19.2-19.2 51.2 0 70.4l448 448c19.2 19.2 51.2 19.2 70.4 0 19.2-19.2 19.2-51.2 0-70.4L358.4 512l409.6-416z" fill="currentColor"/>
           </svg>
         </button>
-        <h3 class="dialog-title">{{ isEditing ? '编辑平台' : '添加平台' }}</h3>
-        <button class="btn-confirm" @click="handleSubmit">完成</button>
+        <h3 class="dialog-title">{{ dialogTitle }}</h3>
+        <button v-if="showForm" class="btn-confirm" @click="handleSubmit">完成</button>
+        <span v-else class="btn-confirm-placeholder"></span>
       </div>
 
       <div class="dialog-body">
         <!-- 平台图标显示区域 - 顶部居中 -->
-        <div class="icon-display-section">
+        <div v-if="showForm" class="icon-display-section">
           <div class="icon-preview-large" ref="iconPreviewRef" @click="toggleIconPicker">
             <img 
               v-if="formData.icon && !iconLoadError && isImageIcon(formData.icon)"
@@ -96,46 +97,80 @@
           </Teleport>
         </div>
 
-        <form @submit.prevent="handleSubmit">
-          <div v-if="!isEditing" class="form-group">
-            <label class="form-label">官方 API 预设（API Key 认证）</label>
-            <select class="form-input" @change="applyPreset">
-              <option value="">自定义平台</option>
-              <option v-for="(preset, index) in providerPresets" :key="preset.name" :value="index">{{ preset.name }}</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">平台名称</label>
-            <input 
-              v-model="formData.name" 
-              type="text" 
-              class="form-input" 
-              placeholder="例如：自定义平台"
-              required
-            >
+        <!-- 第一步：选择提供商（只在添加时出现） -->
+        <div v-if="!showForm" class="provider-picker">
+          <input v-model="providerSearch" type="search" class="form-input provider-search" placeholder="搜索提供商，例如 OpenAI、百炼、OpenRouter" />
+          <button type="button" class="provider-card provider-card--custom" @click="pickCustom">
+            <span class="provider-card-name">自定义提供商</span>
+            <span class="provider-card-sub">任意兼容 OpenAI / Anthropic 标准 API 的服务，填地址即可</span>
+          </button>
+          <template v-for="group in providerGroups" :key="group.key">
+            <div class="provider-group-title">{{ group.label }}</div>
+            <div class="provider-grid">
+              <button v-for="item in group.items" :key="item.id" type="button" class="provider-card" @click="pickProvider(item)">
+                <span class="provider-card-name">{{ item.name }}</span>
+              </button>
+            </div>
+          </template>
+          <p v-if="providerGroups.length === 0" class="form-hint">没有匹配的提供商，可以选择下面的「自定义提供商」。</p>
+        </div>
+
+        <!-- 第二步：填写必要信息 -->
+        <form v-else @submit.prevent="handleSubmit">
+          <div v-if="!isEditing && selectedProvider" class="provider-chosen">
+            <strong>{{ selectedProvider.name }}</strong>
+            <span class="form-hint">{{ selectedProvider.baseUrl }}</span>
           </div>
 
-          <div class="form-group">
-            <label class="form-label">API 基础URL</label>
-            <input
-              v-model="formData.baseUrl"
-              type="url"
-              class="form-input"
-              placeholder="例如：https://api.openai.com"
-              required
-            >
-          </div>
+          <!-- 自定义提供商：先说明它兼容哪种标准 API -->
+          <template v-if="isCustom">
+            <div class="form-group">
+              <label class="form-label">平台名称</label>
+              <input v-model="formData.name" type="text" class="form-input" placeholder="例如：公司内部网关" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">兼容的标准 API</label>
+              <select v-model="formData.apiStyle" class="form-input">
+                <option v-for="style in customApiStyles" :key="style.value" :value="style.value">{{ style.label }}（{{ style.endpoint }}）</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">API 基础 URL</label>
+              <input v-model="formData.baseUrl" type="url" class="form-input" placeholder="例如：https://gateway.example.com/v1" required>
+              <p class="form-hint">只写到版本前缀即可，会自动拼接 {{ endpointHint }}；已带 /v1、/v4 等路径时原样保留。</p>
+            </div>
+          </template>
 
           <div class="form-group">
-            <label class="form-label">API Key</label>
-            <input
-              v-model="formData.apiKey"
-              type="password"
-              class="form-input"
-              placeholder="输入您的API密钥"
-            >
+            <label class="form-label">API Key<span v-if="selectedProvider?.noKey || isEditing && currentProvider?.noKey">（本地服务可留空）</span></label>
+            <input v-model="formData.apiKey" type="password" class="form-input" placeholder="输入您的 API 密钥" autocomplete="off">
+            <p v-if="keyUrl" class="form-hint"><a :href="keyUrl" target="_blank" rel="noopener noreferrer" class="api-doc-link">到 {{ activeProviderName }} 获取 API Key</a></p>
           </div>
 
+          <!-- 名称和地址已经填好；代理、请求头这类很少用的都收在这里 -->
+          <details class="provider-more" :open="isEditing && hasAdvancedValues">
+            <summary>更多设置</summary>
+            <template v-if="!isCustom">
+              <div class="form-group">
+                <label class="form-label">平台名称</label>
+                <input v-model="formData.name" type="text" class="form-input" placeholder="平台名称" required>
+              </div>
+              <div class="form-group">
+                <label class="form-label">API 基础 URL</label>
+                <input v-model="formData.baseUrl" type="url" class="form-input" placeholder="https://api.openai.com/v1" required>
+                <p class="form-hint">使用中转或其他地区的地址时才需要修改。</p>
+              </div>
+            </template>
+            <div class="form-group">
+              <label class="form-label">代理</label>
+              <input v-model="formData.proxyUrl" type="text" class="form-input" placeholder="http://127.0.0.1:7890" autocomplete="off">
+              <p class="form-hint">留空沿用系统设置。支持 HTTP、HTTPS、SOCKS5、SOCKS5H，可写成 scheme://用户名:密码@地址:端口。只作用于这个提供商。</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">自定义请求头（JSON）</label>
+              <textarea v-model="formData.headers" class="form-input headers-input" rows="3" spellcheck="false" placeholder='{"HTTP-Referer":"https://example.com"}'></textarea>
+            </div>
+          </details>
         </form>
       </div>
     </div>
@@ -144,8 +179,10 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue'
-import { providerPresets } from '../../../services/providerPresets'
+import { providers, providerGroupLabels, customApiStyles, CUSTOM_PROVIDER_ID, providerForPlatform, type ProviderDef, type ApiStyle } from '../../../services/providerRegistry'
 import { fetchRemoteModelsCatalog, type AIPlatform } from '../../../services/modelConfig'
+import { validateProxyUrl } from '../../../services/providerTransport'
+import { parseObject } from '../../../services/modelOptionsForm'
 import { getPlatformIconDisplayUrl, isImageIconValue, resolvePlatformIconUrl } from '../../../services/iconCache'
 
 interface Props {
@@ -162,18 +199,61 @@ const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
 const isEditing = computed(() => !!props.platform)
-const applyPreset = (event: Event) => {
-  const value = (event.target as HTMLSelectElement).value
-  if (!value) return
-  const preset = providerPresets[Number(value)]
-  if (preset) { formData.value.name = preset.name; formData.value.baseUrl = preset.baseUrl }
+// 添加时分两步：先选提供商（pick），再填必要信息（form）。编辑已有平台直接进入 form。
+const step = ref<'pick' | 'form'>('pick')
+const showForm = computed(() => isEditing.value || step.value === 'form')
+const selectedProvider = ref<ProviderDef | null>(null)
+const providerSearch = ref('')
+const currentProvider = computed(() => props.platform ? providerForPlatform(props.platform) : undefined)
+const isCustom = computed(() => isEditing.value
+  ? (props.platform?.provider === CUSTOM_PROVIDER_ID || (!props.platform?.provider && !currentProvider.value))
+  : formData.value.provider === CUSTOM_PROVIDER_ID)
+const activeProviderName = computed(() => selectedProvider.value?.name || currentProvider.value?.name || '')
+const hasAdvancedValues = computed(() => !!formData.value.proxyUrl.trim() || !!formData.value.headers.trim())
+const keyUrl = computed(() => selectedProvider.value?.keyUrl || currentProvider.value?.keyUrl || '')
+const endpointHint = computed(() => customApiStyles.find(item => item.value === formData.value.apiStyle)?.endpoint || '')
+const dialogTitle = computed(() => {
+  if (isEditing.value) return '编辑平台'
+  return step.value === 'pick' ? '选择提供商' : '添加平台'
+})
+
+const providerGroups = computed(() => {
+  const q = providerSearch.value.trim().toLowerCase()
+  const matched = providers.filter(item => !q || item.name.toLowerCase().includes(q) || item.id.includes(q) || item.baseUrl.toLowerCase().includes(q))
+  return (Object.keys(providerGroupLabels) as (keyof typeof providerGroupLabels)[])
+    .map(key => ({ key, label: providerGroupLabels[key], items: matched.filter(item => item.group === key) }))
+    .filter(group => group.items.length > 0)
+})
+
+const pickProvider = (item: ProviderDef) => {
+  selectedProvider.value = item
+  formData.value = { ...formData.value, name: item.name, baseUrl: item.baseUrl, provider: item.id, apiStyle: item.apiStyle }
+  step.value = 'form'
+}
+
+const pickCustom = () => {
+  selectedProvider.value = null
+  formData.value = { ...formData.value, name: '', baseUrl: '', provider: CUSTOM_PROVIDER_ID, apiStyle: 'openai-chat' }
+  step.value = 'form'
+}
+
+const handleBack = () => {
+  if (!isEditing.value && step.value === 'form') {
+    step.value = 'pick'
+    return
+  }
+  emit('close')
 }
 
 const formData = ref({
   name: '',
   baseUrl: '',
   apiKey: '',
-  icon: ''
+  icon: '',
+  provider: '' as string,
+  apiStyle: 'openai-chat' as ApiStyle,
+  proxyUrl: '',
+  headers: ''
 })
 
 // 图标相关状态
@@ -256,8 +336,15 @@ const resetForm = () => {
     name: '',
     baseUrl: '',
     apiKey: '',
-    icon: ''
+    icon: '',
+    provider: '',
+    apiStyle: 'openai-chat',
+    proxyUrl: '',
+    headers: ''
   }
+  step.value = 'pick'
+  selectedProvider.value = null
+  providerSearch.value = ''
   iconLoadError.value = false
   iconError.value = ''
 }
@@ -307,7 +394,11 @@ watch(() => props.platform, (platform) => {
       name: platform.name,
       baseUrl: platform.baseUrl,
       apiKey: platform.apiKey || '',
-      icon: platform.icon || ''
+      icon: platform.icon || '',
+      provider: platform.provider || '',
+      apiStyle: platform.apiStyle || 'openai-chat',
+      proxyUrl: platform.proxyUrl || '',
+      headers: platform.customHeaders && Object.keys(platform.customHeaders).length ? JSON.stringify(platform.customHeaders, null, 2) : ''
     }
   } else {
     resetForm()
@@ -319,6 +410,8 @@ watch(() => props.show, (show) => {
   if (show) {
     loadAvailableIcons()
     showIconPicker.value = false
+    // 每次打开「添加」都从选提供商开始
+    if (!props.platform) resetForm()
   }
 })
 
@@ -331,13 +424,34 @@ const handleSubmit = () => {
     alert('请填写 API 基础URL')
     return
   }
+  // 代理和请求头：先校验，错误直接提示，不要存进去之后请求时才报错
+  let proxyUrl = ''
+  let customHeaders: Record<string, string> = {}
+  try {
+    proxyUrl = validateProxyUrl(formData.value.proxyUrl)
+    customHeaders = formData.value.headers.trim() ? parseObject(formData.value.headers, '请求头') as Record<string, string> : {}
+    if (Object.values(customHeaders).some(value => typeof value !== 'string')) throw new Error('请求头的值必须是字符串')
+    new Headers(customHeaders)
+  } catch (e) {
+    alert(e instanceof Error ? e.message : String(e))
+    return
+  }
   const platformData: any = {
+    proxyUrl,
+    customHeaders,
     name: formData.value.name,
     displayName: formData.value.name,
     baseUrl: formData.value.baseUrl,
     apiKey: formData.value.apiKey || undefined,
     icon: formData.value.icon || undefined,
     enabled: props.platform?.enabled ?? true
+  }
+  // 新增时记录选的提供商；自定义提供商再记录它兼容的标准 API。编辑时只在自定义平台上改 apiStyle。
+  if (!isEditing.value) {
+    platformData.provider = formData.value.provider || CUSTOM_PROVIDER_ID
+    if (isCustom.value) platformData.apiStyle = formData.value.apiStyle
+  } else if (isCustom.value) {
+    platformData.apiStyle = formData.value.apiStyle
   }
   
   // 只有在创建新平台时才提供空的模型数组
@@ -396,6 +510,27 @@ const handleOverlayClick = (event: MouseEvent) => {
   animation: popup-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
+.btn-confirm-placeholder { width: 56px; }
+.provider-picker { display: grid; gap: 8px; padding-bottom: 8px; max-height: 64vh; overflow-y: auto; padding-right: 4px; }
+.provider-search { margin-bottom: 4px; }
+.provider-group-title { font-size: 12px; color: var(--text-secondary, #667085); margin-top: 8px; }
+.provider-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.provider-card {
+  display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  padding: 8px 12px; min-height: 40px; text-align: left; cursor: pointer;
+  border: 1px solid var(--platform-config-dialog-border, #8884); border-radius: 8px;
+  background: transparent; color: inherit; font: inherit;
+}
+.provider-card:hover { border-color: #f7b32b; background: rgba(247, 179, 43, 0.08); }
+.provider-card-name { font-size: 13px; font-weight: 500; line-height: 1.3; }
+.provider-card-sub { font-size: 11px; opacity: 0.7; line-height: 1.4; }
+.provider-card--custom { width: 100%; border-style: dashed; }
+.provider-chosen { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.provider-more { margin-top: 4px; }
+.headers-input { font-family: monospace; resize: vertical; }
+.provider-more summary { cursor: pointer; padding: 8px 0; font-size: 13px; }
+.provider-more .form-group { margin-top: 8px; }
+.form-hint { font-size: 12px; line-height: 1.6; color: var(--text-secondary, #667085); margin: 6px 0 0; }
 .btn-secondary:hover {
   background: var(--platform-config-btn-secondary-hover-bg);
   color: var(--platform-config-btn-secondary-hover-text);

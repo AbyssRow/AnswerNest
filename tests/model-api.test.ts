@@ -4,6 +4,8 @@ import { buildPresetProcessModelJsCode } from '../src/services/modelProtocol'
 import { providerEndpoint, providerHeaders, providerClientOptions, validateProxyUrl } from '../src/services/providerTransport'
 import { BatchApi, batchRowsFromPrompts, parseBatchJsonl } from '../src/services/batchApi'
 import { collectModelOptions } from '../src/services/modelOptionsForm'
+import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform } from '../src/services/providerRegistry'
+import { batchStatusLabel, canDownloadResults, endpointForModel } from '../src/services/batchUi'
 
 const platform: any = { id: 'p1', baseUrl: 'https://api.openai.com/v1', apiKey: 'test-key', models: [] }
 const model: any = { id: 'm1', modelId: 'gpt-4.1-mini', apiProtocol: 'openai-chat', maxTokens: 2048, temperature: 0, topP: 0.8 }
@@ -246,6 +248,71 @@ test('Mistral Batch uses batch/jobs and input_files', async () => {
   assert.deepEqual(JSON.parse(calls[1].init.body).input_files, ['file-1'])
   assert.equal(job.status, 'success')
   assert.equal(job.outputFileId, 'output')
+})
+test('OpenRouter Batch posts requests inline with endpoint/model first, strips :batch, and reads inline results', async () => {
+  const calls: any[] = []
+  const api = new BatchApi({ ...platform, baseUrl: 'https://openrouter.ai/api/v1' }, 'openrouter', async (url, init) => {
+    calls.push({ url: String(url), init })
+    if (init?.method === 'POST') return jsonResponse({ id: 'batch_1', status: 'validating', request_counts: { total: 2, completed: 0, failed: 0 } })
+    return jsonResponse({ id: 'batch_1', status: 'completed', request_counts: { total: 2, completed: 1, failed: 1 }, results: [
+      { id: 'batch_req_1', custom_id: 'request-1', response: { status_code: 200, body: { id: 'gen-batch-1' } } },
+      { id: 'batch_req_2', custom_id: 'request-2', error: { message: 'rejected' } },
+    ] })
+  })
+  const text = await batchRowsFromPrompts(platform, { ...model, modelId: 'openai/gpt-4o:batch' }, ['hi', 'hello'])
+  const job = await api.create(text, '/v1/chat/completions', undefined, { model: 'openai/gpt-4o:batch' })
+  assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/batches')
+  const sent = JSON.parse(calls[0].init.body)
+  // key order matters to OpenRouter: endpoint and model before requests
+  assert.deepEqual(Object.keys(sent), ['endpoint', 'model', 'requests'])
+  assert.equal(sent.model, 'openai/gpt-4o')
+  assert.equal(sent.requests.length, 2)
+  assert.deepEqual(Object.keys(sent.requests[0]), ['custom_id', 'body'])
+  assert.equal(sent.requests[0].body.model, undefined)
+  assert.equal(new Headers(calls[0].init.headers).get('authorization'), 'Bearer test-key')
+  assert.equal((await api.retrieve(job)).status, 'completed')
+  const all = (await api.results(job)).split('\n')
+  assert.equal(all.length, 2)
+  assert.deepEqual((await api.results(job, true)).split('\n').map(line => JSON.parse(line).custom_id), ['request-2'])
+  await assert.rejects(api.cancel(job), /没有取消接口/)
+})
+test('OpenRouter Batch rejects mixed models, :online variants and stream', async () => {
+  const api = new BatchApi({ ...platform, baseUrl: 'https://openrouter.ai/api/v1' }, 'openrouter', async () => jsonResponse({}))
+  const mk = (id: string, m?: string) => JSON.stringify({ custom_id: id, body: { ...(m ? { model: m } : {}), messages: [{ role: 'user', content: 'hi' }] } })
+  await assert.rejects(api.create([mk('a', 'openai/gpt-4o'), mk('b', 'anthropic/claude-sonnet-4')].join('\n'), '/v1/chat/completions'), /一个模型/)
+  await assert.rejects(api.create(mk('a'), '/v1/chat/completions', undefined, { model: 'openai/gpt-4o:online' }), /:online/)
+  await assert.rejects(api.create(mk('a'), '/v1/chat/completions'), /指定/)
+  assert.throws(() => parseBatchJsonl(JSON.stringify({ custom_id: 'a', body: { stream: true, messages: [{ role: 'user', content: 'x' }] } }), 'openrouter', '/v1/chat/completions'), /流式/)
+})
+test('provider registry: known providers carry protocol and batch spec, custom ones default to none', () => {
+  const byId = Object.fromEntries(providers.map(p => [p.id, p]))
+  assert.equal(byId.anthropic.apiStyle, 'anthropic')
+  assert.equal(byId.openrouter.batch, 'openrouter')
+  assert.equal(byId.openai.batch, 'openai')
+  assert.equal(byId.mistral.batch, 'mistral')
+  assert.equal(new Set(providers.map(p => p.id)).size, providers.length)
+  for (const p of providers) assert.doesNotThrow(() => new URL(p.baseUrl), p.id)
+  // saved provider wins; legacy platforms are recognised by host; custom has no batch
+  assert.equal(providerForPlatform({ provider: 'groq', baseUrl: 'https://gateway.example.com/v1' })?.id, 'groq')
+  assert.equal(providerForPlatform({ baseUrl: 'https://api.anthropic.com/v1' })?.id, 'anthropic')
+  assert.equal(batchSpecForPlatform({ provider: 'custom', baseUrl: 'https://openrouter.ai/api/v1' }), null)
+  assert.equal(batchSpecForPlatform({ baseUrl: 'https://unknown.example.com/v1' }), null)
+  assert.equal(defaultProtocolForPlatform({ provider: 'custom', apiStyle: 'openai-response' }), 'openai-response')
+  assert.equal(defaultProtocolForPlatform({ baseUrl: 'https://api.anthropic.com/v1' }), 'anthropic')
+  assert.equal(defaultProtocolForPlatform({ baseUrl: 'https://nowhere.example/v1' }), 'openai-chat')
+})
+test('batch UI helpers: status labels, download availability and endpoint by model protocol', () => {
+  assert.equal(batchStatusLabel('in_progress'), '处理中')
+  assert.equal(batchStatusLabel('some_new_status'), 'some_new_status')
+  const job = (kind: any, status: string, extra: any = {}) => ({ id: 'x', platformId: 'p', baseUrl: 'u', kind, status, createdAt: '', counts: {}, ...extra })
+  assert.equal(canDownloadResults(job('openrouter', 'completed') as any), true)
+  assert.equal(canDownloadResults(job('openrouter', 'in_progress') as any), false)
+  assert.equal(canDownloadResults(job('anthropic', 'ended') as any), true)
+  assert.equal(canDownloadResults(job('openai', 'completed') as any), false)
+  assert.equal(canDownloadResults(job('openai', 'completed', { outputFileId: 'f' }) as any), true)
+  assert.equal(endpointForModel('openai', { apiProtocol: 'openai-response' }), '/v1/responses')
+  assert.equal(endpointForModel('mistral', { apiProtocol: 'openai-response' }), '/v1/chat/completions')
+  assert.equal(endpointForModel('openrouter', { apiProtocol: 'anthropic' }), '/v1/messages')
 })
 test('decision model answers only choice and judgement questions', async () => {
   const { decisionKindFromPrompt, decisionCanAnswer, buildDecisionPayload, formatDecisionAnswer, decisionEndpoint } = await import('../src/services/decisionApi')

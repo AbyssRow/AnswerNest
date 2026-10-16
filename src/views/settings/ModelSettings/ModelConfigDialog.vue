@@ -173,8 +173,8 @@
               </p>
 
               <!-- 关闭思考：按协议展示可选参数 -->
-              <div v-if="!formData.enableThinking" class="thinking-options">
-                <p class="thinking-options-title">兼容模式关闭参数（官方适配优先）</p>
+              <details v-if="!formData.enableThinking" class="thinking-options thinking-compat">
+                <summary class="thinking-options-title">关闭思考的兼容参数（一般无需修改）</summary>
 
                 <template v-if="isChatProtocol">
                   <label class="thinking-check" :class="{ disabled: isRemote }">
@@ -215,30 +215,63 @@
                 </template>
 
                 <p v-else class="form-hint">自定义协议请在代码中自行控制思考参数。</p>
-              </div>
+              </details>
 
-              <!-- 开启思考：选择强度 -->
+              <!-- 开启思考：方式 / 强度 / 预算都在这一组 -->
               <div v-else class="thinking-options">
-                <p class="thinking-options-title">
-                  思考强度
-                  <code v-if="isChatProtocol">reasoning_effort</code>
-                  <code v-else>reasoning.effort</code>
-                </p>
-                <div class="thinking-effort-switch">
-                  <button
-                    v-for="opt in thinkingEffortOptions"
-                    :key="opt.value"
-                    type="button"
-                    class="thinking-effort-btn"
-                    :class="{ active: formData.thinkingEffort === opt.value }"
+                <template v-if="isMessagesProtocol">
+                  <p class="thinking-options-title">思考方式</p>
+                  <div class="thinking-effort-switch">
+                    <button
+                      v-for="opt in thinkingModeOptions"
+                      :key="opt.value"
+                      type="button"
+                      class="thinking-effort-btn"
+                      :class="{ active: formData.thinkingMode === opt.value }"
+                      :disabled="isRemote"
+                      @click="!isRemote && (formData.thinkingMode = opt.value)"
+                    >{{ opt.label }}</button>
+                  </div>
+                  <p class="form-hint">{{ thinkingModeHint }}</p>
+                </template>
+
+                <template v-if="showThinkingEffort">
+                  <p class="thinking-options-title">
+                    思考强度
+                    <code v-if="isMessagesProtocol">output_config.effort</code>
+                    <code v-else-if="isChatProtocol">reasoning_effort</code>
+                    <code v-else>reasoning.effort</code>
+                  </p>
+                  <div class="thinking-effort-switch">
+                    <button
+                      v-for="opt in thinkingEffortOptions"
+                      :key="opt.value"
+                      type="button"
+                      class="thinking-effort-btn"
+                      :class="{ active: formData.thinkingEffort === opt.value }"
+                      :disabled="isRemote"
+                      @click="!isRemote && (formData.thinkingEffort = opt.value)"
+                    >{{ opt.label }}</button>
+                  </div>
+                </template>
+
+                <label v-if="showThinkingBudget" class="thinking-budget">
+                  <span class="thinking-options-title">思考预算（Token，可选）</span>
+                  <input
+                    v-model="formData.thinkingBudget"
+                    class="form-input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    :placeholder="isMessagesProtocol ? '默认 1024，需小于最大输出 Token' : '不填则由提供商决定'"
                     :disabled="isRemote"
-                    @click="!isRemote && (formData.thinkingEffort = opt.value)"
-                  >{{ opt.label }}</button>
-                </div>
+                  >
+                </label>
+                <p v-if="showThinkingBudget && !isMessagesProtocol" class="form-hint">不填则由提供商决定；不支持该参数的服务会忽略它。</p>
               </div>
             </div>
 
-            <ModelAdvancedOptions ref="advancedOptionsRef" :model="model" :disabled="isRemote" />
+            <ModelAdvancedOptions ref="advancedOptionsRef" :model="model" :disabled="isRemote" :show-upstream="platform?.provider === 'custom'" />
           </form>
         </div>
       </div>
@@ -258,9 +291,16 @@ import * as acorn from 'acorn'
 import { type AIModel, type ThinkingEffort, type ThinkingOffResponsesEffort } from '../../../services/modelConfig'
 import { buildPresetProcessModelJsCode, normalizeApiProtocol, readModelIdFromJsCode } from '../../../services/modelProtocol'
 import { useExclusiveMenu } from '../../../composables/useExclusiveMenu'
+import { defaultProtocolForPlatform, providerForPlatform } from '../../../services/providerRegistry'
 import ModelAdvancedOptions from './ModelAdvancedOptions.vue'
 import { createProviderFetch, providerEndpoint, providerHeaders } from '../../../services/providerTransport'
 import type { AIPlatform } from '../../../services/modelConfig'
+
+const thinkingModeOptions: { value: NonNullable<AIModel['thinkingMode']>; label: string }[] = [
+  { value: 'auto', label: '自动' },
+  { value: 'budget', label: '固定预算' },
+  { value: 'adaptive', label: '自适应' },
+]
 
 const thinkingEffortOptions: { value: ThinkingEffort; label: string }[] = [
   { value: 'low', label: 'low' },
@@ -325,6 +365,8 @@ const formData = ref({
   thinkingOffThinkingTypeDisabled: false,
   thinkingOffResponsesEffort: 'minimal' as ThinkingOffResponsesEffort,
   thinkingEffort: 'medium' as ThinkingEffort,
+  thinkingMode: 'auto' as NonNullable<AIModel['thinkingMode']>,
+  thinkingBudget: '',
   apiProtocol: 'openai-chat' as AIModel['apiProtocol']
 })
 
@@ -339,6 +381,24 @@ const requiresModelId = computed(() => formData.value.apiProtocol !== 'custom')
 const isChatProtocol = computed(() => formData.value.apiProtocol === 'openai-chat' || formData.value.apiProtocol === 'custom')
 const isResponsesProtocol = computed(() => formData.value.apiProtocol === 'openai-response')
 const isMessagesProtocol = computed(() => formData.value.apiProtocol === 'anthropic')
+// Anthropic 固定预算模式下强度不起作用；自适应/自动才用强度
+const showThinkingEffort = computed(() => !(isMessagesProtocol.value && formData.value.thinkingMode === 'budget'))
+// 思考预算只对少数提供商有意义：Anthropic（固定预算）、通义百炼、硅基流动；自定义提供商让用户自己决定。
+// 其他提供商不显示，避免一堆用不上的输入框。
+const BUDGET_UPSTREAMS = ['qwen', 'siliconflow']
+const platformProvider = computed(() => props.platform ? providerForPlatform(props.platform) : undefined)
+const showThinkingBudget = computed(() => {
+  if (isMessagesProtocol.value) return formData.value.thinkingMode !== 'adaptive'
+  if (!isChatProtocol.value) return false
+  if (props.platform?.provider === 'custom') return true
+  const upstream = props.model?.upstream && props.model.upstream !== 'auto' ? props.model.upstream : platformProvider.value?.upstream
+  return !!upstream && BUDGET_UPSTREAMS.includes(upstream)
+})
+const thinkingModeHint = computed(() => ({
+  auto: '较新的 Claude 模型使用自适应思考，其余使用固定预算。',
+  budget: '按下面的预算 Token 数思考（至少 1024，且小于最大输出 Token）。',
+  adaptive: '由模型自己决定思考多少，用「思考强度」控制（模型需支持）。',
+}[formData.value.thinkingMode]))
 const isFormValid = computed(() => {
   if (!formData.value.displayName.trim()) return false
   if (requiresModelId.value && !formData.value.modelId.trim()) return false
@@ -698,8 +758,8 @@ const normalizeOffResponsesEffort = (
 }
 
 const createDialogFormData = (model?: AIModel | null) => {
-  let defaultProtocol: AIModel['apiProtocol'] = 'openai-chat'
-  try { if (new URL(props.platformBaseUrl || '').hostname === 'api.anthropic.com') defaultProtocol = 'anthropic' } catch {}
+  // 新模型默认用这个平台所选提供商的 API 协议；老平台按地址推断
+  let defaultProtocol: AIModel['apiProtocol'] = defaultProtocolForPlatform({ ...(props.platform || {}), baseUrl: props.platform?.baseUrl || props.platformBaseUrl })
   const protocol = normalizeApiProtocol(model?.apiProtocol || defaultProtocol)
   // 统一展示 modelId（服务端/同步保证有值；缺省用目录 id）
   const modelId = model?.modelId?.trim() || model?.id || readModelIdFromJsCode(model?.jsCode) || ''
@@ -709,6 +769,8 @@ const createDialogFormData = (model?: AIModel | null) => {
   const thinkingOffThinkingTypeDisabled = model?.thinkingOffThinkingTypeDisabled === true
   const thinkingOffResponsesEffort = normalizeOffResponsesEffort(model)
   const thinkingEffort = normalizeEffort(model?.thinkingEffort)
+  const thinkingMode = model?.thinkingMode || 'auto'
+  const thinkingBudget = model?.thinkingBudget === undefined ? '' : String(model.thinkingBudget)
 
   return {
     displayName: model?.displayName || '',
@@ -731,6 +793,8 @@ const createDialogFormData = (model?: AIModel | null) => {
     thinkingOffThinkingTypeDisabled,
     thinkingOffResponsesEffort,
     thinkingEffort,
+    thinkingMode,
+    thinkingBudget,
     apiProtocol: protocol
   }
 }
@@ -1104,6 +1168,16 @@ const handleSubmit = () => {
     return
   }
 
+  const budgetText = String(formData.value.thinkingBudget ?? '').trim()
+  let thinkingBudget: number | undefined
+  if (budgetText) {
+    thinkingBudget = Number(budgetText)
+    if (!Number.isInteger(thinkingBudget) || thinkingBudget < 0 || thinkingBudget > 2000000) {
+      alert('思考预算必须是 0 到 2000000 之间的整数')
+      return
+    }
+  }
+
   let options: Partial<AIModel>
   try { options = advancedOptionsRef.value?.collect() || {} } catch (e) { alert(e instanceof Error ? e.message : String(e)); return }
   const modelData: Partial<AIModel> = {
@@ -1118,6 +1192,8 @@ const handleSubmit = () => {
     thinkingOffThinkingTypeDisabled: formData.value.thinkingOffThinkingTypeDisabled,
     thinkingOffResponsesEffort: formData.value.thinkingOffResponsesEffort,
     thinkingEffort: formData.value.thinkingEffort,
+    thinkingMode: formData.value.thinkingMode,
+    thinkingBudget,
     apiProtocol: formData.value.apiProtocol
   }
 
@@ -1799,6 +1875,8 @@ const handleSubmit = () => {
   gap: 8px;
 }
 
+.thinking-budget { display: grid; gap: 6px; margin-top: 4px; }
+.thinking-budget .form-input { background: var(--platform-config-dialog-bg, #fff); border: 1px solid var(--platform-config-dialog-border, #8884); }
 .thinking-options-title {
   margin: 0;
   font-size: 12px;

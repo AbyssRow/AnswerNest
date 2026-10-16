@@ -29,13 +29,10 @@ export default {
   },
   computed: {
     options() {
-      const baseOptions = [
-        { value: 'text', label: '文本' },
-        { value: 'vision', label: '视觉' }
-      ];
+      const answer = { value: 'text', label: '答题' }
       return this.showSummary
-        ? [...baseOptions, { value: 'summary', label: '总结' }]
-        : baseOptions;
+        ? [answer, { value: 'summary', label: '总结' }]
+        : [answer];
     },
     selectedIndex() {
       return this.options.findIndex(o => o.value === this.selectedOption);

@@ -89,11 +89,11 @@ const GENERAL_SHOTS: FewShotPair[] = [
 ]
 
 export const detectAnswerFewShotKind = (query: string): AnswerFewShotKind => {
-  const q = query || ''
-  if (/题目类型：\s*多选/.test(q) || /multiple/i.test(q)) return 'multiple'
-  if (/题目类型：\s*判断/.test(q) || /judg(?:e)?ment/i.test(q)) return 'judgement'
-  if (/题目类型：\s*填空/.test(q) || /completion/i.test(q)) return 'completion'
-  if (/题目类型：\s*单选/.test(q) || /single/i.test(q)) return 'single'
+  const type = (query || '').match(/【题目类型：([^】]+)】/)?.[1] || ''
+  if (/多选/.test(type)) return 'multiple'
+  if (/判断/.test(type)) return 'judgement'
+  if (/填空/.test(type)) return 'completion'
+  if (/单选|选择/.test(type)) return 'single'
   return 'general'
 }
 
@@ -103,6 +103,7 @@ export const shouldAttachAnswerFewShot = (query: string): boolean => {
   if (!q) return false
   if (q.startsWith('__SAME_QUESTION_CHECK__:')) return false
   if (q.startsWith('__URL_QUESTION__:')) return false
+  if (q.startsWith('你是一个总结专家')) return false
   return q.includes('【题目】') || q.includes('专业的答题助手') || q.includes('"answer"')
 }
 

@@ -291,7 +291,7 @@
           <div v-if="activeTab === 'modelResponse'" class="detail-section">
 
             <!-- ===== URL 题目视觉分析视图 ===== -->
-            <template v-if="selectedLog && selectedLog.urlQuestion">
+            <template v-if="selectedLog && selectedLog.urlQuestion && !(selectedLog.multiModelResponses && selectedLog.multiModelResponses.length)">
               <div class="url-analysis-panel">
                 <!-- 题目图片区域：URL 转 base64 后渲染 -->
                 <div class="url-image-box">
@@ -340,7 +340,7 @@
 
             <!-- ===== 多模型切换视图 ===== -->
             <template
-              v-if="selectedLog && selectedLog.multiModelResponses && selectedLog.multiModelResponses.length > 0 && !selectedLog.urlQuestion">
+              v-if="selectedLog && selectedLog.multiModelResponses && selectedLog.multiModelResponses.length > 0">
               <!-- 横向模型选择器 -->
               <div class="multi-model-tabs">
                 <button v-for="mr in selectedLog.multiModelResponses" :key="mr.modelId" class="multi-model-tab" :class="{
@@ -492,7 +492,6 @@
 
     <!-- 模型选择对话框 -->
     <ModelSelectorDialog :show="showModelSelector" :selected-text-model-ids="globalSelectedTextModels.map(m => m.id)"
-      :selected-vision-model-id="globalSelectedVisionModel?.id || null"
       :selected-summary-model-ids="globalSelectedSummaryModels.map(m => m.id)" :available-models="availableModels"
       :platforms="platforms" @close="showModelSelector = false" @model-selected="selectModel" />
 
@@ -513,6 +512,7 @@
 </template>
 
 <script setup lang="ts">
+import { providerClientOptions } from '../services/providerTransport'
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useSettings } from '../services/settings'
 import { useModelConfig } from '../services/modelConfig'
@@ -539,6 +539,9 @@ import {
 } from '../utils/urlQuestion'
 import { normalizeAnswerJsonContent } from '../utils/answerNormalize'
 import { buildAnswerChatMessages } from '../utils/answerFewShot'
+import { findImageUrls, loadQuestionFileText, pickAnswerModels, questionHasImages } from '../utils/questionAttachments'
+import { callDecisionModel, decisionCanAnswer } from '../services/decisionApi'
+import { normalizeApiProtocol } from '../services/modelProtocol'
 
 
 
@@ -1335,7 +1338,7 @@ const startSSEConnection = () => {
       try {
         const eventData = JSON.parse((event as MessageEvent).data)
         const requestData = eventData.ModelCallRequest || eventData
-        dispatchModelCallRequest(requestData.request_id, requestData.query)
+        dispatchModelCallRequest(requestData.request_id, requestData.query, requestData.images)
       } catch (error) {
         console.error('解析模型调用请求数据失败:', error, '原始数据:', (event as MessageEvent).data)
       }
@@ -1927,8 +1930,6 @@ const selectModel = (model: any) => {
 
   if (category === 'summary') {
     toggleSelectedSummaryModel(model.id)
-  } else if (category === 'vision') {
-    toggleSelectedVisionModel(model.id)
   } else {
     toggleSelectedTextModel(model.id)
   }
@@ -2013,6 +2014,42 @@ const getReasoningContentValue = (payload: any): string => {
   return typeof reasoning === 'string' ? reasoning : ''
 }
 
+const enrichAnswerMessages = async (
+  messages: Array<{ role: string; content: any }>,
+  media?: { images?: string[]; attachImages?: boolean; fileText?: string }
+) => {
+  if (!media?.fileText && !media?.attachImages) return messages
+  const copy = messages.map(message => ({ ...message }))
+  const last = copy[copy.length - 1]
+  if (!last || typeof last.content !== 'string') return copy
+  let text = last.content
+  if (media.fileText) text += `\n\n【附件文件】\n${media.fileText}`
+  if (!media.attachImages) {
+    last.content = text
+    return copy
+  }
+  const imageUrls = [...new Set([...(media.images || []), ...findImageUrls(text)].filter(Boolean))]
+  const parts: any[] = [{ type: 'text', text }]
+  const failed: string[] = []
+  for (const url of imageUrls) {
+    try {
+      const data = url.startsWith('data:') ? url : await fetchQuestionImageBase64(url)
+      if (!data) throw new Error('empty')
+      parts.push({ type: 'image_url', image_url: { url: data, detail: 'high' } })
+    } catch {
+      failed.push(url)
+    }
+  }
+  if (failed.length && parts.length === 1) {
+    throw new Error(`图片下载失败：${failed.join('，')}`)
+  }
+  if (failed.length) {
+    parts[0].text += `\n\n（以下图片未能附上：${failed.join('，')}）`
+  }
+  last.content = await prepareVisionRequestContent(parts)
+  return copy
+}
+
 // 调用模型函数 - 支持流式显示
 const callModelWithStreaming = async (
 
@@ -2020,7 +2057,8 @@ const callModelWithStreaming = async (
   query: string,
   requestId: string,
   onChunk?: (content: string) => void,
-  onReasoning?: (text: string) => void
+  onReasoning?: (text: string) => void,
+  media?: { images?: string[]; attachImages?: boolean; fileText?: string }
 ) => {
   if (isRequestCancelled(requestId)) {
     throw createCancelledRequestError()
@@ -2031,6 +2069,37 @@ const callModelWithStreaming = async (
 
   // 获取模型所属的平台
   const platform = platforms.value.find(p => p.models.some(m => m.id === model.id))
+
+  if (normalizeApiProtocol(model.apiProtocol) === 'decision') {
+    if (!platform) throw new Error('未找到模型所属平台')
+    const abortController = new AbortController()
+    registerAbortController(requestId, abortController)
+    const { settings: appSettings } = useSettings()
+    const timeoutMs = (appSettings.modelResponseTimeout ?? 40) * 1000
+    const timeoutHandle = setTimeout(() => abortController.abort(new DOMException(`模型响应超时（${Math.round(timeoutMs / 1000)} 秒）`, 'TimeoutError')), timeoutMs)
+    const tauriHttp = await import('@tauri-apps/plugin-http')
+    try {
+      const answer = await callDecisionModel({
+        query,
+        modelId: runtimeModelId,
+        platform,
+        fileText: media?.fileText,
+        signal: abortController.signal,
+        fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) => tauriHttp.fetch(input as any, {
+          ...init,
+          ...providerClientOptions(platform),
+          signal: init?.signal ?? abortController.signal
+        } as any)) as typeof fetch
+      })
+      if (onChunk) onChunk(answer)
+      else updateStreamingResponse(requestId, answer)
+      void sendModelProgressToBackend(requestId, answer)
+      return answer
+    } finally {
+      clearTimeout(timeoutHandle)
+      unregisterAbortController(requestId, abortController)
+    }
+  }
 
   if (!platform) {
     console.error('未找到模型所属平台 - 详细信息:')
@@ -2046,7 +2115,7 @@ const callModelWithStreaming = async (
 
   // 构建测试输入数据（普通答题注入典型例题多轮对话）
   const testInput: any = {
-    messages: buildAnswerChatMessages(query),
+    messages: await enrichAnswerMessages(buildAnswerChatMessages(query), media),
     model: runtimeModelId,
     stream: true,
     tools: []
@@ -2055,6 +2124,7 @@ const callModelWithStreaming = async (
   // 构建配置对象
   const config = {
     ...model,
+    customHeaders: platform.customHeaders,
     apiKey: platform.apiKey,
     baseUrl: platform.baseUrl,
     model: runtimeModelId,
@@ -2082,6 +2152,7 @@ const callModelWithStreaming = async (
     try {
       return await tauriHttp.fetch(input as any, {
         ...init,
+        ...providerClientOptions(platform),
         credentials: init.credentials ?? 'include',
         signal: init.signal ?? abortController.signal
       } as any)
@@ -2133,6 +2204,7 @@ const callModelWithStreaming = async (
           // 如果返回的是生成器或异步迭代器，进行流式处理
           if (result[Symbol.asyncIterator]) {
             let toolCalls: any[] = []
+            let turnReasoning = ''
 
             for await (const chunk of result) {
               if (chunk.tool_calls) {
@@ -2162,6 +2234,7 @@ const callModelWithStreaming = async (
               const rc = getReasoningContentValue(chunk)
               if (rc) {
                 fullReasoning += rc
+                turnReasoning += rc
                 if (onReasoning) {
                   onReasoning(fullReasoning)
                 } else {
@@ -2171,7 +2244,9 @@ const callModelWithStreaming = async (
             }
 
             if (toolCalls.length > 0) {
-              testInput.messages.push({ role: 'assistant', content: '', tool_calls: toolCalls })
+              const assistantTurn: Record<string, any> = { role: 'assistant', content: '', tool_calls: toolCalls }
+              if (turnReasoning) assistantTurn.reasoning_content = turnReasoning
+              testInput.messages.push(assistantTurn)
 
               for (const tc of toolCalls) {
                 try {
@@ -2329,6 +2404,7 @@ const callModel = async (model: AIModel, query: string) => {
   // 构建配置对象
   const config = {
     ...model,
+    customHeaders: platform.customHeaders,
     apiKey: platform.apiKey,
     baseUrl: platform.baseUrl,
     model: runtimeModelId,
@@ -2339,6 +2415,7 @@ const callModel = async (model: AIModel, query: string) => {
   const tauriFetch = (input: RequestInfo | URL, init: RequestInit = {}) =>
     tauriHttp.fetch(input as any, {
       ...init,
+      ...providerClientOptions(platform),
       credentials: init.credentials ?? 'include'
     } as any)
 
@@ -2443,11 +2520,11 @@ onMounted(async () => {
   if (isTauri.value) {
     try {
       const { listen } = await import('@tauri-apps/api/event')
-      unlistenModelCallRequest = await listen<{ request_id?: string; query?: string }>(
+      unlistenModelCallRequest = await listen<{ request_id?: string; query?: string; images?: string[] }>(
         'model-call-request',
         (event) => {
           const payload = event.payload || {}
-          dispatchModelCallRequest(String(payload.request_id || ''), String(payload.query || ''))
+          dispatchModelCallRequest(String(payload.request_id || ''), String(payload.query || ''), payload.images)
         }
       )
       unlistenRequestLogComplete = await listen<{
@@ -2556,9 +2633,46 @@ const modelCallPhase = (query: string) => {
   return 'answer'
 }
 
+const pendingQuestionImages = new Map<string, string[]>()
+
+const rememberQuestionImages = (requestId: string, images?: unknown) => {
+  if (!Array.isArray(images)) return
+  const urls = images.map(item => typeof item === 'string' ? item.trim() : '').filter(Boolean)
+  if (!urls.length) return
+  pendingQuestionImages.set(requestId, urls)
+  // 图片可能是很大的 base64。重试还要用到，所以不在读取后立刻删，只保留最近的若干条，避免长时间运行内存一直涨
+  while (pendingQuestionImages.size > 30) {
+    const oldest = pendingQuestionImages.keys().next().value
+    if (oldest === undefined) break
+    pendingQuestionImages.delete(oldest)
+  }
+}
+
+/** 旧服务端把带链接的题标成 URL 题。转成普通答题 prompt，图片仍从正文和 images 字段附上。 */
+const urlMarkerToAnswerPrompt = (query: string): string => {
+  const raw = query.slice('__URL_QUESTION__:'.length)
+  const marker = '\n__OPTIONS__:'
+  const idx = raw.indexOf(marker)
+  const title = idx >= 0 ? raw.slice(0, idx) : raw
+  const options = idx >= 0 ? raw.slice(idx + marker.length).trim() : ''
+  return [
+    '你是一个专业的答题助手。请按以下要求作答：',
+    '1. 先在内部完成审题与推理（可简要），再给出最终答案。',
+    '2. 最后一行输出唯一一个 JSON 对象，不要用 markdown 代码块包裹，JSON 前后不要附加说明。',
+    '3. JSON 格式严格为：{"answer": "最终答案"}',
+    '4. answer 只写答案正文本身：选择题必须与选项去掉序号后的文字完全一致；判断题只写「正确」或「错误」。',
+    '',
+    `【题目】\n${title}`,
+    options ? `【选项】\n${options}` : '',
+    '',
+    '请作答，并在最后输出答案 JSON：'
+  ].filter(Boolean).join('\n')
+}
+
 /** SSE / Tauri 双通道入口 */
-const dispatchModelCallRequest = (requestId: string, query: string) => {
+const dispatchModelCallRequest = (requestId: string, query: string, images?: unknown) => {
   if (!requestId || typeof query !== 'string') return
+  rememberQuestionImages(requestId, images)
   const phase = modelCallPhase(query)
   const key = `${requestId}:${phase}`
   console.log('模型调用请求数据:', { requestId, phase, query: query.slice(0, 120) })
@@ -2572,7 +2686,7 @@ const dispatchModelCallRequest = (requestId: string, query: string) => {
   const done = () => { inflightModelCallKeys.delete(key) }
 
   if (phase === 'url') {
-    void handleUrlQuestionRequest(requestId, query.slice('__URL_QUESTION__:'.length)).finally(done)
+    void callModelAPI(requestId, urlMarkerToAnswerPrompt(query)).finally(done)
     return
   }
 
@@ -2592,16 +2706,20 @@ const callModelAPI = async (requestId: string, query: string) => {
   void sendModelProgressToBackend(requestId, 'dispatch')
 
   try {
-    // 只有文本模型参与基础输出；视觉模型仅在 query 包含图片时才加入
-    const hasImage = /https?:\/\/\S+\.(png|jpg|jpeg|gif|webp)/i.test(query) || query.includes('base64')
-    const selectedModels = [...globalSelectedTextModels.value]
-    if (hasImage && globalSelectedVisionModel.value) {
-      selectedModels.push(globalSelectedVisionModel.value)
-    }
+    const extraImages = pendingQuestionImages.get(requestId) || []
+    const hasImages = questionHasImages(query, extraImages)
+    const answerModels = pickAnswerModels([...globalSelectedTextModels.value], hasImages)
+    const selectedModels = answerModels.filter(model =>
+      normalizeApiProtocol(model.apiProtocol) !== 'decision' || decisionCanAnswer(query, hasImages)
+    )
 
     if (selectedModels.length === 0) {
       const logIndex = requestLogs.value.findIndex(log => log.id === requestId)
-      const errorText = '错误: 未选择模型'
+      const errorText = hasImages && answerModels.length === 0
+        ? '错误: 带图片的题目需要至少一个已选中、且开启了视觉的答题模型'
+        : answerModels.some(model => normalizeApiProtocol(model.apiProtocol) === 'decision')
+          ? '错误: 决策模型只回答选择题和判断题，且不处理带图片的题'
+          : '错误: 未选择模型'
       if (logIndex !== -1) {
         requestLogs.value[logIndex].modelResponse = errorText
         requestLogs.value[logIndex].isModelCalling = false
@@ -2652,12 +2770,29 @@ const callModelAPI = async (requestId: string, query: string) => {
       heartbeatIntervals.set(requestId, timerId)
     }
 
-    // 并发调用基础模型
-    // 重试条件：仅有一个基础模型，或当前是视觉模型
-    const visionModelId = globalSelectedVisionModel.value?.id
+    let fileText = ''
+    const fileAbort = new AbortController()
+    const { settings: fileSettings } = useSettings()
+    const fileTimer = setTimeout(() => fileAbort.abort(), (fileSettings.modelResponseTimeout ?? 40) * 1000)
+    try {
+      const tauriHttp = await import('@tauri-apps/plugin-http')
+      fileText = await loadQuestionFileText(query, ((input: RequestInfo | URL, init?: RequestInit) =>
+        tauriHttp.fetch(input as any, { ...init, signal: init?.signal ?? fileAbort.signal } as any)) as typeof fetch, fileAbort.signal)
+    } catch (error) {
+      console.warn('附件文件读取失败', error)
+    } finally {
+      clearTimeout(fileTimer)
+    }
+    const answerMedia = {
+      images: [...extraImages, ...findImageUrls(query)],
+      attachImages: hasImages,
+      fileText
+    }
+
+    // 并发调用答题模型。纯文本全答；带图片只答开了视觉的。
     const results: { model: AIModel; response: string; success: boolean }[] = []
     const modelPromises = selectedModels.map(async (model) => {
-      const allowRetry = selectedModels.length === 1 || (!!visionModelId && model.id === visionModelId)
+      const allowRetry = selectedModels.length === 1
       try {
         const response = await withModelRetry(
           requestId,
@@ -2678,7 +2813,8 @@ const callModelAPI = async (requestId: string, query: string) => {
               query,
               requestId,
               (content) => updateMultiModelStreamingResponse(requestId, model.id, stripMarkdownCodeBlock(content)),
-              (reasoning) => updateMultiModelStreamingReasoning(requestId, model.id, reasoning)
+              (reasoning) => updateMultiModelStreamingReasoning(requestId, model.id, reasoning),
+              answerMedia
             )
           },
           (attempt, maxAttempts) => {
@@ -2732,7 +2868,7 @@ const callModelAPI = async (requestId: string, query: string) => {
     if (isRequestCancelled(requestId)) return
 
     // --- 阶段 2: 汇总与总结 (Summary Phase) ---
-    const summaryModels = globalSelectedSummaryModels.value
+    const summaryModels = globalSelectedSummaryModels.value.filter(model => normalizeApiProtocol(model.apiProtocol) !== 'decision')
 
     // 过滤掉失败的基础模型结果，只用成功的部分做总结和最终答案
     const successfulBaseEntries = results.filter(result => result.success)
@@ -2806,7 +2942,8 @@ ${baseCombinedResponse}
                   summaryQuery,
                   requestId,
                   (content) => updateMultiModelStreamingResponse(requestId, summaryKey, stripMarkdownCodeBlock(content)),
-                  (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning)
+                  (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning),
+                  answerMedia
                 )
               },
               (attempt, maxAttempts) => {
@@ -3358,7 +3495,8 @@ const handleSameQuestionCheckRequest = async (requestId: string, payloadJson: st
     return
   }
 
-  const model = globalSelectedTextModels.value[0] || globalSelectedTextModel.value
+  const model = globalSelectedTextModels.value.find(item => normalizeApiProtocol(item.apiProtocol) !== 'decision')
+    || (normalizeApiProtocol(globalSelectedTextModel.value?.apiProtocol) !== 'decision' ? globalSelectedTextModel.value : null)
   if (!model) {
     console.warn('同题判断：未选择文本模型，回落为不同题')
     await sendModelResponseToBackend(requestId, JSON.stringify({ same: false }), true)
@@ -4090,9 +4228,9 @@ const analyzeUrlQuestion = async (requestId: string) => {
   if (log.urlQuestion.analyzing || log.urlQuestion.analysisResult || activeUrlAnalysisRequestIds.has(requestId)) return
   if (isRequestCancelled(requestId)) return
 
-  const visionModel = globalSelectedVisionModel.value
+  const visionModel = pickAnswerModels(globalSelectedTextModels.value, true)[0]
   if (!visionModel) {
-    const errorMessage = '请先在模型选择中配置视觉模型'
+    const errorMessage = '带图片的题目需要至少一个已选中、且开启了视觉的答题模型'
     log.urlQuestion.analysisError = errorMessage
     log.urlQuestion.analyzing = false
     log.urlQuestion.streamingResponse = ''
@@ -4146,12 +4284,13 @@ const analyzeUrlQuestion = async (requestId: string) => {
     }
     const runtimeModelId = resolveRuntimeModelId(visionModel)
     const executableCode = resolveExecutableModelJsCode(visionModel)
-    const config = { ...visionModel, apiKey: platform.apiKey, baseUrl: platform.baseUrl, model: runtimeModelId, modelId: runtimeModelId }
+    const config = { ...visionModel, customHeaders: platform.customHeaders, apiKey: platform.apiKey, baseUrl: platform.baseUrl, model: runtimeModelId, modelId: runtimeModelId }
 
     const tauriHttp = await import('@tauri-apps/plugin-http')
     const tauriFetch: typeof fetch = ((input: RequestInfo | URL, init: RequestInit = {}) =>
       tauriHttp.fetch(input as any, {
         ...init,
+        ...providerClientOptions(platform),
         credentials: init.credentials ?? 'include',
         signal: init.signal ?? abortController.signal
       } as any)) as typeof fetch

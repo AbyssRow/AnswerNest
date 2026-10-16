@@ -112,6 +112,23 @@ fn resolve_request_origin(headers: &HeaderMap) -> String {
     format!("http://{}", host)
 }
 
+/// 请求日志里的请求体：把体积很大的 data URL 图片换成占位说明，
+/// 否则一张图就是几百 KB 到几 MB，会被写进请求日志和 SSE 推送并长期占用内存。
+fn request_body_for_log(request: &QueryRequest) -> String {
+    let mut value = serde_json::to_value(request).unwrap_or_default();
+    if let Some(images) = value.get_mut("images").and_then(|v| v.as_array_mut()) {
+        for image in images.iter_mut() {
+            if let Some(text) = image.as_str() {
+                if text.starts_with("data:") && text.len() > 256 {
+                    let mime = text[5..].split([';', ',']).next().unwrap_or("image");
+                    *image = Value::String(format!("[{} data URL, {} 字节已省略]", mime, text.len()));
+                }
+            }
+        }
+    }
+    value.to_string()
+}
+
 fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -352,29 +369,21 @@ fn parse_same_question_result(content: &str) -> Option<i64> {
         })
 }
 
-fn build_normal_model_query(request: &QueryRequest, has_url: bool) -> String {
-    if has_url {
-        let mut q = format!("__URL_QUESTION__:{}", request.title);
-        if let Some(options) = &request.options {
-            if !options.is_empty() {
-                q.push_str(&format!("\n__OPTIONS__:{}", options));
-            }
-        }
-        q
-    } else {
-        build_model_query_prompt(
-            &request.title,
-            request.options.as_deref(),
-            request.query_type.as_deref(),
-        )
-    }
+fn build_normal_model_query(request: &QueryRequest, _has_url: bool) -> String {
+    // 图片和文件不再改走单独的视觉题。链接留在正文里，图片数组另附。
+    build_model_query_prompt(
+        &request.title,
+        request.options.as_deref(),
+        request.query_type.as_deref(),
+    )
 }
 
-fn emit_model_call_request(app: Option<&AppHandle>, request_id: &str, query: &str) {
+fn emit_model_call_request(app: Option<&AppHandle>, request_id: &str, query: &str, images: &[String]) {
     if let Some(app) = app {
         let payload = serde_json::json!({
             "request_id": request_id,
             "query": query,
+            "images": images,
         });
         if let Err(e) = app.emit("model-call-request", payload) {
             println!("⚠️ emit model-call-request failed: {}", e);
@@ -393,8 +402,8 @@ async fn wait_and_store_ai_answer(
     has_url: bool,
 ) -> (u16, QueryResponse) {
     let formatted_query = build_normal_model_query(request, has_url);
-    logger.send_model_call_request(request_id.to_string(), formatted_query.clone());
-    emit_model_call_request(app, request_id, &formatted_query);
+    logger.send_model_call_request(request_id.to_string(), formatted_query.clone(), request.images.clone());
+    emit_model_call_request(app, request_id, &formatted_query, &request.images);
 
     // 覆盖前端超时 × 重试；absolute 防止 keepalive 无限续命
     let (inactivity_secs, absolute_secs) = model_wait_budget_secs(has_url);
@@ -483,7 +492,7 @@ async fn resolve_query_with_same_question_check(
     request_id: &str,
     request_origin: &str,
 ) -> (u16, QueryResponse) {
-    let mut has_url = contains_url(&request.title);
+    let mut has_url = !request.images.is_empty() || contains_url(&request.title);
     if let Some(options) = &request.options {
         if !has_url {
             has_url = contains_url(options);
@@ -550,8 +559,8 @@ async fn resolve_query_with_same_question_check(
         );
         let check_prompt =
             build_same_question_check_prompt(&request.title, request.options.as_deref(), &candidates);
-        logger.send_model_call_request(request_id.to_string(), check_prompt.clone());
-        emit_model_call_request(app, request_id, &check_prompt);
+        logger.send_model_call_request(request_id.to_string(), check_prompt.clone(), Vec::new());
+        emit_model_call_request(app, request_id, &check_prompt, &[]);
 
         match logger
             .wait_for_model_response(request_id.to_string(), 30, 45)
@@ -764,7 +773,7 @@ pub async fn start_server(
             let app = app_for_query.clone();
             async move {
                 let start_time = std::time::Instant::now();
-                let request_body = serde_json::to_string(&request).unwrap_or_default();
+                let request_body = request_body_for_log(&request);
                 
                 // 生成唯一请求ID
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -876,9 +885,10 @@ pub async fn start_server(
                     title: title.clone(),
                     options,
                     query_type,
+                    images: Vec::new(),
                 };
                 
-                let request_body = serde_json::to_string(&request).unwrap_or_default();
+                let request_body = request_body_for_log(&request);
                 
                 // 生成唯一请求ID
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -1767,6 +1777,25 @@ mod same_question_tests {
         classify_model_failure, extract_answer_from_json, parse_same_question_result,
         truncate_chars,
     };
+
+    #[test]
+    fn request_log_body_omits_large_data_urls_but_keeps_http_urls() {
+        use super::request_body_for_log;
+        use crate::types::QueryRequest;
+
+        let big = format!("data:image/png;base64,{}", "A".repeat(5000));
+        let request = QueryRequest {
+            title: "如图所示".to_string(),
+            options: None,
+            query_type: None,
+            images: vec![big, "https://example.com/a.png".to_string()],
+        };
+        let body = request_body_for_log(&request);
+        assert!(body.len() < 400, "log body should be small, got {}", body.len());
+        assert!(body.contains("https://example.com/a.png"));
+        assert!(body.contains("image/png"));
+        assert!(!body.contains("AAAAAAAA"));
+    }
 
     #[test]
     fn truncate_chars_never_splits_multibyte_text() {

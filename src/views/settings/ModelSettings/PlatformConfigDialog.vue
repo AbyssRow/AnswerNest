@@ -97,6 +97,13 @@
         </div>
 
         <form @submit.prevent="handleSubmit">
+          <div v-if="!isEditing" class="form-group">
+            <label class="form-label">官方 API 预设（API Key 认证）</label>
+            <select class="form-input" @change="applyPreset">
+              <option value="">自定义平台</option>
+              <option v-for="(preset, index) in providerPresets" :key="preset.name" :value="index">{{ preset.name }}</option>
+            </select>
+          </div>
           <div class="form-group">
             <label class="form-label">平台名称</label>
             <input 
@@ -137,6 +144,7 @@
 
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue'
+import { providerPresets } from '../../../services/providerPresets'
 import { fetchRemoteModelsCatalog, type AIPlatform } from '../../../services/modelConfig'
 import { getPlatformIconDisplayUrl, isImageIconValue, resolvePlatformIconUrl } from '../../../services/iconCache'
 
@@ -154,6 +162,12 @@ const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
 const isEditing = computed(() => !!props.platform)
+const applyPreset = (event: Event) => {
+  const value = (event.target as HTMLSelectElement).value
+  if (!value) return
+  const preset = providerPresets[Number(value)]
+  if (preset) { formData.value.name = preset.name; formData.value.baseUrl = preset.baseUrl }
+}
 
 const formData = ref({
   name: '',

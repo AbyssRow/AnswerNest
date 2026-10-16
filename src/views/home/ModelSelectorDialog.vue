@@ -9,7 +9,7 @@
         </button>
         <div class="dialog-title-placeholder"></div>
         <ModelCategorySwitch v-if="!forceCategory" v-model="selectedCategory" />
-        <div v-else class="dialog-title-center">{{ forceCategory === 'vision' ? '选择视觉模型' : (forceCategory === 'summary' ? '选择总结模型' : '选择文本模型') }}</div>
+        <div v-else class="dialog-title-center">{{ forceCategory === 'summary' ? '选择总结模型' : '选择答题模型' }}</div>
       </div>
 
       <div class="dialog-body">
@@ -61,11 +61,10 @@ import ModelCategorySwitch from '../settings/ModelSettings/ModelCategorySwitch.v
 interface Props {
   show: boolean
   selectedTextModelIds: string[]
-  selectedVisionModelId: string | null
   selectedSummaryModelIds: string[]
   availableModels: AIModel[]
   platforms: AIPlatform[]
-  forceCategory?: 'text' | 'vision' | 'summary' // Optional prop to force a specific category
+  forceCategory?: 'text' | 'summary'
 }
 
 const props = defineProps<Props>()
@@ -75,7 +74,7 @@ const emit = defineEmits<{
 }>()
 
 const searchQuery = ref('')
-const selectedCategory = ref<'text' | 'vision' | 'summary'>(props.forceCategory || 'text')
+const selectedCategory = ref<'text' | 'summary'>(props.forceCategory === 'summary' ? 'summary' : 'text')
 
 watch(() => props.forceCategory, (newVal) => {
   if (newVal) {
@@ -84,15 +83,13 @@ watch(() => props.forceCategory, (newVal) => {
 })
 
 const isModelSelected = (model: AIModel) => {
-  if (selectedCategory.value === 'text') return props.selectedTextModelIds.includes(model.id)
-  if (selectedCategory.value === 'vision') return props.selectedVisionModelId === model.id
   if (selectedCategory.value === 'summary') return props.selectedSummaryModelIds.includes(model.id)
-  return false
+  return props.selectedTextModelIds.includes(model.id)
 }
 
 const filteredModels = computed(() => {
-  const targetCategory = selectedCategory.value === 'summary' ? 'text' : selectedCategory.value
-  let models = props.availableModels.filter(m => m.category === targetCategory)
+  let models = props.availableModels.filter(m => m.category !== 'summary')
+  if (selectedCategory.value === 'summary') models = models.filter(m => m.supportsVision === true || m.category === 'vision')
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.toLowerCase()
     models = models.filter(m => m.displayName.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))

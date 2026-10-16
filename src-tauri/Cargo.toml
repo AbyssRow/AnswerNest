@@ -22,7 +22,7 @@ tauri = { version = "2.0", features = [ "macos-private-api", "devtools", "tray-i
 tauri-plugin-opener = "2.0"
 # tauri-plugin-sql removed - using rusqlite directly
 # tauri-plugin-sql = { version = "2.0", features = ["sqlite"] }
-tauri-plugin-http = { version = "2.0", features = ["unsafe-headers"] }
+tauri-plugin-http = { version = "2.0", features = ["unsafe-headers", "socks"] }
 tauri-plugin-fs = "2.0"
 tauri-plugin-dialog = "2.0"
 tauri-plugin-clipboard-manager = "2.0"

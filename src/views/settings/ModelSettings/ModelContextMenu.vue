@@ -51,7 +51,7 @@ const menuItems = computed<MenuItem[]>(() => {
   })
   items.push({ type: 'divider' })
 
-  const isVision = props.model?.category === 'vision'
+  const isVision = props.model?.supportsVision === true || props.model?.category === 'vision'
 
   if (isVision) {
     items.push({

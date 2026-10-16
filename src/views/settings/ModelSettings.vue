@@ -73,8 +73,7 @@
                 <h4 class="platform-name">{{ platform.displayName }}</h4>
               </div>
               <div class="platform-tags">
-                <span v-if="isPlatformSelectedForCategory(platform, 'text')" class="platform-tag">文本</span>
-                <span v-if="isPlatformSelectedForCategory(platform, 'vision')" class="platform-tag">视觉</span>
+                <span v-if="isPlatformSelectedForCategory(platform, 'text')" class="platform-tag">答题</span>
                 <span v-if="isPlatformSelectedForCategory(platform, 'summary')" class="platform-tag">总结</span>
               </div>
               <!-- 启用开关已移至详情面板 -->
@@ -215,6 +214,8 @@
           </div>
         </div>
 
+        <ProviderConnectionSettings v-if="selectedPlatform" :key="selectedPlatform.id" :platform="selectedPlatform" @save="updates => updatePlatform(selectedPlatform!.id, updates)" />
+
         <!-- 模型管理 -->
         <div class="detail-section">
           <div class="section-header">
@@ -222,6 +223,7 @@
             <div class="header-actions">
               <!-- 模型分类筛选 -->
               <ModelCategorySwitch v-model="selectedCategory" />
+              <button class="batch-entry-btn" @click="showBatchDialog = true">Batch API</button>
               <!-- 添加模型按钮 -->
               <button class="icon-action-btn icon-action-btn--add icon-action-btn--model-add" @click="openQuickAdd" title="添加模型">
                 <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
@@ -231,10 +233,9 @@
             </div>
           </div>
           
-          <div v-if="selectedCategory === 'text' || selectedCategory === 'summary' || selectedCategory === 'vision'" class="model-list-hint">
-            <template v-if="selectedCategory === 'text'">可多选，最多 5 个（已选 {{ currentMultiModels.length }}/5）</template>
-            <template v-else-if="selectedCategory === 'summary'">单选，再点一次可取消选择</template>
-            <template v-else>单选，再点一次可取消选择</template>
+          <div v-if="selectedCategory === 'text' || selectedCategory === 'summary'" class="model-list-hint">
+            <template v-if="selectedCategory === 'text'">可多选，最多 5 个（已选 {{ currentMultiModels.length }}/5）。带图片的题只调用其中开了视觉的模型。</template>
+            <template v-else>只能选一个开了视觉的模型，再点一次可取消</template>
           </div>
           <div class="model-list">
             <div 
@@ -243,9 +244,7 @@
               :data-model-id="model.id"
               class="model-item"
               :class="{ 
-                active: selectedCategory === 'vision' 
-                  ? isVisionModelSelected(model.id)
-                  : (selectedCategory === 'summary' ? isSummaryModelSelected(model.id) : isTextModelSelected(model.id)),
+                active: selectedCategory === 'summary' ? isSummaryModelSelected(model.id) : isTextModelSelected(model.id),
                 'model-item--disabled': isSelectedPlatformDisabled
               }"
               @click="selectModel(model)"
@@ -257,14 +256,14 @@
               </div>
               <div class="model-info">
                 <div class="model-header">
-                  <h5 class="model-name">{{ model.displayName }}</h5>
+                  <h5 class="model-name">{{ model.displayName }}<template v-if="model.supportsVision"> · 视觉</template></h5>
                  
                 </div>
                 
               </div>
               <div class="model-actions">
                 <div 
-                  v-if="selectedCategory === 'vision' ? isVisionModelSelected(model.id) : (selectedCategory === 'summary' ? isSummaryModelSelected(model.id) : isTextModelSelected(model.id))" 
+                  v-if="selectedCategory === 'summary' ? isSummaryModelSelected(model.id) : isTextModelSelected(model.id)" 
                   :class="selectedCategory === 'text' ? 'model-selected model-selected--multi' : 'model-selected'"
                 >
                   <span class="model-dot"></span>
@@ -324,9 +323,12 @@
       @close="hideModelMenu"
     />
 
+    <BatchJobsDialog v-if="showBatchDialog && selectedPlatform" :key="selectedPlatform.id" :platform="selectedPlatform" @close="showBatchDialog = false" />
+
     <ModelConfigDialog
       :show="showModelConfigDialog"
       :model="editingModel"
+      :platform="selectedPlatform"
       :platform-base-url="selectedPlatform?.baseUrl"
       :platform-api-key="selectedPlatform?.apiKey"
       @close="closeModelDialog"
@@ -368,12 +370,15 @@
 </template>
 
 <script setup lang="ts">
+import { providerClientOptions } from '../../services/providerTransport'
 import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
 import { useModelConfig, fetchRemoteModelsCatalog } from '../../services/modelConfig'
 import type { AIPlatform, AIModel, RemoteModelIconMapping } from '../../services/modelConfig'
 import { resolveExecutableModelJsCode, resolveRuntimeModelId } from '../../services/modelProtocol'
 import { environmentDetector } from '../../services/environmentDetector'
 import { getPlatformIconDisplayUrl, resolvePlatformIconUrl } from '../../services/iconCache'
+import BatchJobsDialog from './ModelSettings/BatchJobsDialog.vue'
+import ProviderConnectionSettings from './ModelSettings/ProviderConnectionSettings.vue'
 import PlatformConfigDialog from './ModelSettings/PlatformConfigDialog.vue'
 import PlatformContextMenu from './ModelSettings/PlatformContextMenu.vue'
 import ModelContextMenu from './ModelSettings/ModelContextMenu.vue'
@@ -383,6 +388,7 @@ import ModelDeleteConfirmDialog from './ModelSettings/ModelDeleteConfirmDialog.v
 import PlatformDeleteConfirmDialog from './ModelSettings/PlatformDeleteConfirmDialog.vue'
 import Toggle from '../../components/Toggle.vue'
 import ModelCategorySwitch from './ModelSettings/ModelCategorySwitch.vue'
+import { modelSupportsVision } from '../../utils/questionAttachments'
 import OlTip from './OlTip.vue'
 import { claimExclusiveMenu, useExclusiveMenu } from '../../composables/useExclusiveMenu'
 
@@ -574,28 +580,19 @@ const currentMultiModels = computed(() => {
 
 // 计算某平台下被选中的模型数量（用于 badge）
 const getPlatformSelectedCount = (platform: AIPlatform): number => {
-  if (selectedCategory.value === 'vision') {
-    return globalSelectedVisionModel.value?.platformId === platform.id ? 1 : 0
-  }
   const ids = currentMultiModels.value.map(m => m.id)
-  return platform.models.filter(m => (m.category === 'text' || m.category === 'summary') && ids.includes(m.id)).length
+  return platform.models.filter(m => ids.includes(m.id)).length
 }
 
 // 模型分类筛选状态
-const selectedCategory = ref<'summary' | 'text' | 'vision'>('text')
+const selectedCategory = ref<'summary' | 'text'>('text')
 
 // 检查平台是否有模型被选中（针对特定分类）
-const isPlatformSelectedForCategory = (platform: AIPlatform, category: 'summary' | 'text' | 'vision') => {
+const isPlatformSelectedForCategory = (platform: AIPlatform, category: 'summary' | 'text') => {
   if (category === 'text') {
     return globalSelectedTextModels.value.some(m => m.platformId === platform.id)
   }
-  if (category === 'summary') {
-    return globalSelectedSummaryModels.value.some(m => m.platformId === platform.id)
-  }
-  if (category === 'vision') {
-    return globalSelectedVisionModel.value?.platformId === platform.id
-  }
-  return false
+  return globalSelectedSummaryModels.value.some(m => m.platformId === platform.id)
 }
 
 // 计算属性：根据分类筛选模型
@@ -604,12 +601,9 @@ const filteredModels = computed(() => {
   
   const models = selectedPlatform.value.models || []
   
-  // 'summary' 和 'text' 都显示文本模型
-  if (selectedCategory.value === 'summary' || selectedCategory.value === 'text') {
-    return models.filter(model => model.category === 'text')
-  }
-  
-  return models.filter(model => model.category === 'vision')
+  const answerModels = models.filter(model => model.category !== 'summary')
+  if (selectedCategory.value === 'summary') return answerModels.filter(model => modelSupportsVision(model))
+  return answerModels
 })
 
 const isSelectedPlatformDisabled = computed(() => selectedPlatform.value?.enabled === false)
@@ -618,11 +612,8 @@ const isSelectedPlatformDisabled = computed(() => selectedPlatform.value?.enable
 const currentModel = computed(() => {
   if (selectedCategory.value === 'text') {
     return globalSelectedTextModel.value
-  } else if (selectedCategory.value === 'summary') {
-    return globalSelectedSummaryModel.value
-  } else {
-    return currentVisionModel.value
   }
+  return globalSelectedSummaryModel.value
 })
 const testingModelId = ref<string | null>(null)
 const testResults = ref<{[key: string]: any}>({})
@@ -907,7 +898,7 @@ const revealModelInList = async (platformId: string, modelId: string, category: 
     selectedModel.value = latestPlatform.models.find(model => model.id === modelId) || null
   }
 
-  selectedCategory.value = category === 'vision' ? 'vision' : (category === 'summary' ? 'summary' : 'text')
+  selectedCategory.value = category === 'summary' ? 'summary' : 'text'
 
   await nextTick()
   updateScrollbarThumb()
@@ -922,14 +913,12 @@ const selectModel = (model: AIModel) => {
     return
   }
 
-  if (selectedCategory.value === 'text') {
-    toggleSelectedTextModel(model.id)
-  } else if (selectedCategory.value === 'summary') {
+  if (selectedCategory.value === 'summary') {
+    if (!isSummaryModelSelected(model.id) && !modelSupportsVision(model)) return
     toggleSelectedSummaryModel(model.id)
-  } else if (selectedCategory.value === 'vision') {
-    toggleSelectedVisionModel(model.id)
-    // currentVisionModel 由 watch(globalSelectedVisionModel) 同步
+    return
   }
+  toggleSelectedTextModel(model.id)
 }
 
 // 图标相关方法
@@ -1210,6 +1199,8 @@ const closeModelDialog = () => {
   editingModel.value = null
 }
 
+const showBatchDialog = ref(false)
+
 const saveModel = async (modelData: Partial<AIModel>) => {
   if (!selectedPlatform.value) return
 
@@ -1221,11 +1212,16 @@ const saveModel = async (modelData: Partial<AIModel>) => {
     if (editingModel.value) {
       // 远程模型：名称 / id / 协议 / 思考由管理员锁定，禁止本地覆写
       if (editingModel.value.isRemote) {
+        await updateModel(editingModel.value.id, {
+          supportsVision: modelData.supportsVision === true,
+          category: 'text'
+        })
         closeModelDialog()
         return
       }
       // 使用 ModelConfigManager 的 updateModel 以确保正确保存
       await updateModel(editingModel.value.id, {
+        ...modelData,
         displayName: modelData.displayName,
         modelId: modelData.modelId,
         jsCode: modelData.jsCode,
@@ -1245,6 +1241,7 @@ const saveModel = async (modelData: Partial<AIModel>) => {
         maxTokens: 4096,
         temperature: 0.7,
         topP: 1.0,
+        ...modelData,
         enabled: true,
         modelId: modelData.modelId,
         jsCode: modelData.jsCode || '',
@@ -1373,6 +1370,31 @@ const addModel = async (platformId: string, model: AIModel) => {
 // 测试模型功能
 const testModel = async (model: AIModel, testFunctionCalling: boolean = false) => {
   if (!selectedPlatform.value) return
+  if (model.apiProtocol === 'decision') {
+    testingModelId.value = model.id
+    currentTestError.value = ''
+    streamingResponse.value = '决策模型测试中…'
+    try {
+      const { callDecisionModel } = await import('../../services/decisionApi')
+      const { providerClientOptions } = await import('../../services/providerTransport')
+      const tauriHttp = await import('@tauri-apps/plugin-http')
+      const platform = selectedPlatform.value
+      const answer = await callDecisionModel({
+        query: '【题目类型：判断题】\n【题目】\n地球绕太阳公转一周约为 365 天。\n\n请作答，并在最后输出答案 JSON：',
+        modelId: resolveRuntimeModelId(model),
+        platform,
+        fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) => tauriHttp.fetch(input as any, { ...init, ...providerClientOptions(platform) } as any)) as typeof fetch
+      })
+      streamingResponse.value = answer
+      currentTestResult.value = { success: true, response: answer, timestamp: new Date().toLocaleString(), testType: '决策模型测试' }
+    } catch (error) {
+      currentTestError.value = error instanceof Error ? error.message : String(error)
+      streamingResponse.value = ''
+    } finally {
+      testingModelId.value = null
+    }
+    return
+  }
   const runtimeModelId = resolveRuntimeModelId(model)
   
   // 创建AbortController用于取消请求
@@ -1389,7 +1411,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
     // 根据模型类型构建不同的测试输入数据
     let testInput: any
     
-    if (model.category === 'vision' && !testFunctionCalling) {
+    if (modelSupportsVision(model) && !testFunctionCalling) {
       // 视觉模型测试：使用图片输入
       // 将图片转换为base64格式
       let imageBase64 = ''
@@ -1532,6 +1554,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
     // 构建配置对象
     const config = {
       ...model,
+      customHeaders: selectedPlatform.value.customHeaders,
       apiKey: selectedPlatform.value.apiKey,
       baseUrl: selectedPlatform.value.baseUrl,
       model: runtimeModelId,
@@ -1540,7 +1563,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
     
     const tauriHttp = await import('@tauri-apps/plugin-http')
     const tauriFetch = createCookieEnabledFetch(
-      (input, init) => tauriHttp.fetch(input as any, init as any),
+      (input, init) => tauriHttp.fetch(input as any, { ...init, ...providerClientOptions(selectedPlatform.value!) }),
       testAbortController.value?.signal
     )
     const executableCode = resolveExecutableModelJsCode(model)
@@ -1584,6 +1607,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
             // 如果返回的是生成器或异步迭代器，收集结果
             if (result[Symbol.asyncIterator]) {
               let toolCalls: any[] = []
+              let turnReasoning = ''
 
               for await (const chunk of result) {
                 if (chunk.tool_calls) {
@@ -1605,6 +1629,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
                 if (chunk.reasoning_content) {
                   if (firstTokenAt === null) firstTokenAt = performance.now()
                   fullReasoning += chunk.reasoning_content
+                  turnReasoning += chunk.reasoning_content
                   streamingReasoning.value = fullReasoning // 实时更新流式思考过程
                 }
                 if (readTokenRateFromPayload(chunk) !== null || readOutputTokenCountFromPayload(chunk) !== null) {
@@ -1613,7 +1638,9 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
               }
 
               if (toolCalls.length > 0) {
-                testInput.messages.push({ role: 'assistant', content: '', tool_calls: toolCalls })
+                const assistantTurn: Record<string, any> = { role: 'assistant', content: '', tool_calls: toolCalls }
+                if (turnReasoning) assistantTurn.reasoning_content = turnReasoning
+                testInput.messages.push(assistantTurn)
 
                 for (const tc of toolCalls) {
                   try {
@@ -1670,7 +1697,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
                   tokenRate: tokenRate ?? undefined,
                   timestamp: new Date().toLocaleString(),
                   modelType: model.category,
-                  testType: model.category === 'vision' ? '图像理解测试' : '文本对话测试'
+                  testType: modelSupportsVision(model) ? '图像理解测试' : '文本对话测试'
                 }
               }
               break;
@@ -1704,7 +1731,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
                   tokenRate: tokenRate ?? undefined,
                   timestamp: new Date().toLocaleString(),
                   modelType: model.category,
-                  testType: model.category === 'vision' ? '图像理解测试' : '文本对话测试'
+                  testType: modelSupportsVision(model) ? '图像理解测试' : '文本对话测试'
                 }
               }
               break;
@@ -1857,6 +1884,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.batch-entry-btn {
+  border: 1px solid var(--border-color, #8885);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: var(--platform-config-dialog-bg);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* 模型设置布局样式 */
 .model-settings-container {
   background-color: var(--bg-primary, #f4f4f4);

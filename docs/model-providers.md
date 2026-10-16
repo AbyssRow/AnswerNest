@@ -1,0 +1,101 @@
+# 模型提供商、代理与 Batch API
+
+## 使用入口
+
+- 设置 → 模型设置 → 添加平台：可选择 13 个官方 API Key 平台预设，或填写自定义地址。
+- 选中平台 → **网络代理与请求头**：保存此平台的代理 URL 和额外请求头。
+- 添加 / 编辑本地模型 → **模型参数与上游兼容**：设置 Token 上限、Temperature、Top P、频率 / 存在惩罚、随机种子、停止序列、Top K、思考预算、Anthropic 思考模式，以及额外 JSON 参数和省略字段。
+- 选中平台 → **Batch API**：导入 JSONL 或从每行一个问题生成请求，提交后按需刷新、取消、下载结果和错误文件。
+
+远程目录模型仍遵循项目原有只读约定；可在同一平台添加本地模型来定制参数。平台代理与请求头是本地配置，远程目录同步时保留。
+
+## 网络与参数
+
+代理支持 `http://`、`https://`、`socks5://`、`socks5h://`。空值沿用系统 / 插件默认行为，不表示强制直连。代理地址可以包含用户名和密码，按现有模型配置方式保存。代理覆盖答题和总结的上游请求、模型测试、模型列表，以及 Batch 上传、查询、取消和下载；不会改动本地题库服务器、更新检查或题目图片、附件文件下载的网络设置。
+
+API Base URL 可以是根地址、带版本号的地址、网关前缀或完整 Chat / Responses / Messages 端点。根地址默认补 `/v1`，已有路径原样保留，不会重复追加 `/v1`；查询参数也保留。需要其他版本的上游应使用下表中的完整基础路径。
+
+参数优先级：协议默认参数 → 上游适配 → 额外 JSON 参数（顶层合并）→ 省略字段。模型 ID、消息 / input 和流式开关由调用方控制，参数表单不允许覆盖或删除这些字段。
+
+例如，输出 JSON 可在支持它的 Chat 模型上填写：
+
+```json
+{"response_format":{"type":"json_object"}}
+```
+
+要让服务器决定采样值，在省略字段中填写 `temperature,top_p`。Responses 使用 `max_output_tokens`，OpenAI 已知推理模型的 Chat 使用 `max_completion_tokens`。Anthropic 默认不发送采样参数；若所用模型支持，可通过额外参数显式设置。
+
+开启思考不是所有模型都支持的开关：部分模型始终思考，部分不返回思考文本。自动适配只按官方域名和已知模型规则判断；中转、自建网关可手动选择上游适配，或用 `compatible` 与额外参数自行配置。自定义 JavaScript 仍需自行读取 config 中的参数，提供商代理则仍作用于传入的 fetch。
+
+## 上游差异与官方参考
+
+以下是本次实现覆盖的请求适配，不代表每个上游的每款模型都支持全部参数。核对日期：2026-10-16；模型能力仍由各提供商决定。
+
+| 提供商 | API Base URL | 本次处理 |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | Chat / Responses，推理模型 Token 字段与采样限制，普通模型不发送非标准思考参数 |
+| Anthropic | `https://api.anthropic.com/v1` | `x-api-key`、`anthropic-version`，system 消息，工具与图像格式，预算 / 自适应思考 |
+| DeepSeek | `https://api.deepseek.com/v1` | `thinking.type`，推理强度映射，思考模式采样限制，工具续接保留 reasoning_content |
+| 百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 保留 compatible-mode 路径，`enable_thinking`、`thinking_budget`、`top_k` |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | 官方 OpenAI 兼容接口，保留版本路径，思考强度；仅已知可关闭思考的模型发送 none |
+| OpenRouter | `https://openrouter.ai/api/v1` | `reasoning` 对象；可配置 HTTP-Referer 等额外请求头 |
+| Groq | `https://api.groq.com/openai/v1` | 保留 openai 路径，零温度映射，GPT-OSS 思考强度 |
+| Mistral | `https://api.mistral.ai/v1` | `random_seed`，思考参数与独立 Batch Jobs 接口 |
+| xAI | `https://api.x.ai/v1` | 已知推理模型省略不支持的惩罚 / stop 字段，避免误发送其他厂商开关 |
+| Kimi | `https://api.moonshot.cn/v1` | K2.5 / K2.6 思考开关，K3 思考强度，已知模型省略固定采样参数 |
+| 智谱 | `https://open.bigmodel.cn/api/paas/v4` | 保留 paas/v4 路径、thinking.type、已知 GLM 强度及不能关闭思考的模型 |
+| 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` | 保留 api/v3 路径，Chat / Responses 的 thinking.type |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | enable_thinking、thinking_budget、top_k |
+
+官方参考：[OpenAI Batch](https://developers.openai.com/api/reference/resources/batches/methods/create)、[Anthropic Batch](https://platform.claude.com/docs/en/api/messages/batches/create)、[Anthropic 思考](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)、[DeepSeek 思考](https://api-docs.deepseek.com/guides/thinking_mode/)、[百炼 Batch](https://help.aliyun.com/zh/model-studio/batch-inference)、[Gemini 兼容接口](https://ai.google.dev/gemini-api/docs/openai)、[OpenRouter 思考](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)、[Groq 兼容接口](https://console.groq.com/docs/openai)、[Mistral Batch](https://docs.mistral.ai/studio/batch-processing)、[xAI 思考](https://docs.x.ai/developers/model-capabilities/text/reasoning)、[Kimi 思考](https://platform.kimi.com/docs/guide/use-thinking-models)、[智谱思考](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[方舟思考](https://docs.volcengine.com/docs/ark/deep-thinking?lang=en)、[硅基流动思考](https://docs.siliconflow.cn/docs/userguide/capabilities/reasoning)。
+
+## Batch 支持范围
+
+- OpenAI 兼容文件式 Batch：上传 `/files`（purpose=batch），创建 `/batches`（24h），查询 / 取消任务，下载 output / error 文件。覆盖 OpenAI，以及文档采用相同流程的百炼、Groq；模型和端点是否开放由上游决定。
+- Anthropic：`/messages/batches` 直接提交 requests 数组；结束后下载 JSONL，成功和失败结果均在同一结果文件中。
+- Mistral：`/batch/jobs`、`input_files`、job 级 model 与独立状态字段；本次界面支持 Chat Batch。
+- Gemini 的 Batch 文件上传 / 下载不兼容 OpenAI Files，xAI 使用不同任务协议；这两种 Batch 尚未实现。DeepSeek、OpenRouter 等也不假设支持文件式 Batch。界面提示未自动适配，允许用户为明确支持兼容协议的中转手动选择。
+
+实时推理支持与 Batch 支持分开判断。没有加入 OAuth 登录、订阅会话或浏览器凭据复用。
+
+输入示例（OpenAI 兼容）：
+
+```jsonl
+{"custom_id":"question-1","method":"POST","url":"/v1/chat/completions","body":{"model":"your-model-id","messages":[{"role":"user","content":"1+1 等于多少？"}]}}
+```
+
+Anthropic 输入示例：
+
+```jsonl
+{"custom_id":"question-1","params":{"model":"your-claude-model-id","max_tokens":1024,"messages":[{"role":"user","content":"1+1 等于多少？"}]}}
+```
+
+客户端每批限制为 20 MiB / 50000 条，提交前验证全部 JSONL、唯一 custom_id、端点和非流式约束。导入的 body / params 原样使用，不自动套用当前选中模型参数；“从问题生成 JSONL”才会使用模型配置。上传 / 创建请求不会自动重试，创建结果不确定时会提示检查上游控制台，避免重复计费。
+
+任务记录保存在本地 `zerror.batchJobs.v1`，仅包含任务 ID、提供商 ID / 地址、状态和文件 ID 等元数据。关闭应用后上游任务继续运行；重新打开后可手动刷新。可用任务 ID 找回记录。平台地址改变后必须恢复原地址才能操作旧任务。Batch 结果下载为 JSONL，当前不会自动写入题库。
+
+## 验证
+
+```sh
+npm ci --ignore-scripts --allow-remote=all
+npm run test:model-api
+npm run build
+```
+
+`--allow-remote=all` 仅在新版 npm 禁止锁文件中的远程 tarball URL 时需要。
+
+本工作区的 Rust/Cargo 安装在 `.toolchains`（已加入 Git 忽略），未修改系统 PATH。后续在仓库根目录的 PowerShell 中使用：
+
+```powershell
+$env:RUSTUP_HOME = Join-Path $PWD '.toolchains/rustup'
+$env:CARGO_HOME = Join-Path $PWD '.toolchains/cargo'
+$env:PATH = "$env:CARGO_HOME/bin;$env:PATH"
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+npm run tauri -- build --debug --no-bundle
+```
+
+这些环境变量仅影响当前 PowerShell 会话。`npm run tauri` 也会自动识别项目内工具链，显式设置的 `CARGO_HOME` 优先。Windows 编译还需安装 Visual Studio C++ 构建工具。
+
+协议测试运行经压缩的产物，包含 URL / 鉴权 / 参数映射、SSE 分片和错误、工具续接、表单校验以及三个 Batch 协议的请求生命周期，均使用模拟上游。浏览器冒烟验证覆盖表单保存与校验、Batch 提交 / 刷新 / 下载 / 记录重开，HTTP 和原生文件操作使用测试替身。
+
+没有使用真实付费 API 密钥进行联调，也未进行原生 HTTP 代理连接测试。已使用项目内 Rust 工具链及 Visual Studio 2026 通过 `cargo check --locked` 和 `npm run tauri -- build --debug --no-bundle`，生成 `src-tauri/target/debug/answernest.exe`；这是调试构建，未生成签名安装包。Rust 端为现有 reqwest 启用了 socks feature，HTTP 插件的代理配置沿用其官方 [ClientOptions.proxy](https://v2.tauri.app/reference/javascript/http/) 接口。

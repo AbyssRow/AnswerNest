@@ -20,6 +20,9 @@ pub struct QueryRequest {
     pub options: Option<String>,
     #[serde(rename = "type")]
     pub query_type: Option<String>,
+    /// OCS 图片题优化附带的 data URL 或图片地址。旧配置没有这个字段。
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 /// 模型调用响应请求结构体

@@ -20,6 +20,8 @@ AnswerNest是一款专为OCS网课助手设计的AI题库软件，可以方便�
 
 - OCS题库配置
 - 自定义AI供应商以及AI模型
+- 提供商独立 HTTP(S) / SOCKS5 代理、自定义请求头与高级模型参数
+- 上游异步 Batch API（OpenAI 兼容、Anthropic、Mistral）
 - 本地题库管理与缓存
 
 ## 题库管理
@@ -29,6 +31,8 @@ AnswerNest是一款专为OCS网课助手设计的AI题库软件，可以方便�
 ![题库页面](https://free.picui.cn/free/2025/11/09/691031f9db6f9.png)
 
 ## 使用教程
+
+[模型提供商、代理、参数与 Batch API 配置](docs/model-providers.md)
 
 https://www.bilibili.com/video/BV12PSQBLE5G
 

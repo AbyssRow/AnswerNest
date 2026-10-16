@@ -9,7 +9,7 @@
         </button>
         <span class="dialog-title">{{ dialogTitle }}</span>
         <button class="btn-confirm" type="button" :disabled="isRemote ? false : !isFormValid" @click="handlePrimaryAction">
-          {{ isRemote ? '关闭' : (isEditing ? '完成' : '完成') }}
+          完成
         </button>
       </div>
       <div class="dialog-body">
@@ -145,12 +145,17 @@
                 </Transition>
               </Teleport>
             </div>
+            <p v-if="formData.apiProtocol === 'decision'" class="form-hint">只回答选择题和判断题。地址和模型 ID 都用平台里填的。地址写到版本前缀时会接上 /systemone；已经写到 /systemone 或 /decisions 就原样请求。不处理填空、简答和带图片的题。</p>
 
-            <div v-if="showCategorySelect" class="form-group qa-form-row">
-              <label class="form-label">模型类型</label>
-              <div class="qa-category-switch">
-                <ModelCategorySwitch v-model="formData.category" :show-summary="false" />
-              </div>
+            <div v-if="formData.apiProtocol !== 'decision'" class="form-group">
+              <label class="form-label form-label--row">
+                <span>支持视觉</span>
+                <label class="switch-toggle">
+                  <input type="checkbox" v-model="formData.supportsVision" />
+                  <span class="switch-slider"></span>
+                </label>
+              </label>
+              <p class="form-hint">开启后，这个模型可以回答带图片的题，也可以被选为总结模型。</p>
             </div>
 
             <div class="form-group">
@@ -164,12 +169,12 @@
               <p class="form-hint">
                 {{ isRemote
                   ? '远程模型的思考配置由管理员下发，本地不可修改。'
-                  : '开启后，模型会输出思考过程，但响应时间可能明显变长。部分模型/API服务不支持此功能。' }}
+                  : '按上游能力请求思考模式。部分模型始终思考或不公开思考内容；官方适配可能省略不支持的参数。' }}
               </p>
 
               <!-- 关闭思考：按协议展示可选参数 -->
               <div v-if="!formData.enableThinking" class="thinking-options">
-                <p class="thinking-options-title">关闭时发送的参数</p>
+                <p class="thinking-options-title">兼容模式关闭参数（官方适配优先）</p>
 
                 <template v-if="isChatProtocol">
                   <label class="thinking-check" :class="{ disabled: isRemote }">
@@ -233,6 +238,7 @@
               </div>
             </div>
 
+            <ModelAdvancedOptions ref="advancedOptionsRef" :model="model" :disabled="isRemote" />
           </form>
         </div>
       </div>
@@ -252,7 +258,9 @@ import * as acorn from 'acorn'
 import { type AIModel, type ThinkingEffort, type ThinkingOffResponsesEffort } from '../../../services/modelConfig'
 import { buildPresetProcessModelJsCode, normalizeApiProtocol, readModelIdFromJsCode } from '../../../services/modelProtocol'
 import { useExclusiveMenu } from '../../../composables/useExclusiveMenu'
-import ModelCategorySwitch from './ModelCategorySwitch.vue'
+import ModelAdvancedOptions from './ModelAdvancedOptions.vue'
+import { createProviderFetch, providerEndpoint, providerHeaders } from '../../../services/providerTransport'
+import type { AIPlatform } from '../../../services/modelConfig'
 
 const thinkingEffortOptions: { value: ThinkingEffort; label: string }[] = [
   { value: 'low', label: 'low' },
@@ -264,6 +272,7 @@ const thinkingEffortOptions: { value: ThinkingEffort; label: string }[] = [
 interface Props {
   show: boolean
   model?: AIModel | null
+  platform?: AIPlatform | null
   platformBaseUrl?: string
   platformApiKey?: string
 }
@@ -273,6 +282,7 @@ interface Emits {
   (e: 'save', model: Partial<AIModel>): void
 }
 
+const advancedOptionsRef = ref<InstanceType<typeof ModelAdvancedOptions> | null>(null)
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
@@ -280,6 +290,7 @@ const protocolOptions = [
   { value: 'openai-chat', label: 'OpenAI Chat', endpoint: '/v1/chat/completions' },
   { value: 'openai-response', label: 'OpenAI Responses', endpoint: '/v1/responses' },
   { value: 'anthropic', label: 'Anthropic', endpoint: '/v1/messages' },
+  { value: 'decision', label: '决策模型', endpoint: '地址/systemone' },
   { value: 'custom', label: '自定义', endpoint: 'jsCode' }
 ] as const
 const protocolSelectRef = ref<HTMLElement | null>(null)
@@ -306,6 +317,7 @@ const fetchedModelList = ref<FetchedModelItem[]>([])
 const formData = ref({
   displayName: '',
   category: 'text' as 'text' | 'vision' | 'summary',
+  supportsVision: false,
   jsCode: '',
   modelId: '',
   enableThinking: false,
@@ -461,15 +473,6 @@ const normalizeBaseUrl = (url?: string) => (url || '').trim().replace(/\/+$/, ''
 
 const modelsCacheByBaseUrl = new Map<string, FetchedModelItem[]>()
 let fetchModelsGeneration = 0
-let tauriFetchPromise: Promise<typeof import('@tauri-apps/plugin-http').fetch> | null = null
-
-const getTauriFetch = () => {
-  if (!tauriFetchPromise) {
-    tauriFetchPromise = import('@tauri-apps/plugin-http').then(m => m.fetch)
-  }
-  return tauriFetchPromise
-}
-
 const applyFetchedModels = async (models: FetchedModelItem[]) => {
   fetchedModelList.value = models
   if (document.activeElement === modelIdInputRef.value && models.length > 0) {
@@ -479,7 +482,7 @@ const applyFetchedModels = async (models: FetchedModelItem[]) => {
 
 const restoreModelsFromCache = () => {
   const baseUrl = normalizeBaseUrl(props.platformBaseUrl)
-  const cached = baseUrl ? modelsCacheByBaseUrl.get(baseUrl) : undefined
+  const cached = baseUrl ? modelsCacheByBaseUrl.get(modelsCacheKey()) : undefined
   fetchedModelList.value = cached ? [...cached] : []
 }
 
@@ -577,11 +580,13 @@ const parseModelsResponse = (data: any): FetchedModelItem[] => {
   return []
 }
 
+const modelsCacheKey = () => JSON.stringify([props.platform?.id, props.platformBaseUrl, props.platformApiKey, props.platform?.proxyUrl, props.platform?.customHeaders, formData.value.apiProtocol])
+
 const fetchModels = async () => {
   const baseUrl = normalizeBaseUrl(props.platformBaseUrl)
   if (!baseUrl) return
 
-  const cached = modelsCacheByBaseUrl.get(baseUrl)
+  const cached = modelsCacheByBaseUrl.get(modelsCacheKey())
   if (cached?.length) {
     await applyFetchedModels(cached)
   }
@@ -590,13 +595,13 @@ const fetchModels = async () => {
   isFetchingModels.value = true
 
   try {
-    const endpoints = [`${baseUrl}/models`, `${baseUrl}/v1/models`]
+    const endpoints = [providerEndpoint(baseUrl, 'models')]
     let models: FetchedModelItem[] = []
     let lastErr = ''
     let unauthorized = false
-    const tauriFetch = await getTauriFetch()
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (props.platformApiKey) headers['Authorization'] = `Bearer ${props.platformApiKey}`
+    const connection = props.platform || { baseUrl, apiKey: props.platformApiKey || '' }
+    const tauriFetch = createProviderFetch(connection, AbortSignal.timeout(30000))
+    const headers = providerHeaders(connection, formData.value.apiProtocol)
 
     for (const url of endpoints) {
       try {
@@ -632,7 +637,7 @@ const fetchModels = async () => {
         return a.id.localeCompare(b.id)
       })
 
-    modelsCacheByBaseUrl.set(baseUrl, uniqueModels)
+    modelsCacheByBaseUrl.set(modelsCacheKey(), uniqueModels)
     await applyFetchedModels(uniqueModels)
   } catch (error: any) {
     if (generation === fetchModelsGeneration) {
@@ -693,7 +698,9 @@ const normalizeOffResponsesEffort = (
 }
 
 const createDialogFormData = (model?: AIModel | null) => {
-  const protocol = normalizeApiProtocol(model?.apiProtocol)
+  let defaultProtocol: AIModel['apiProtocol'] = 'openai-chat'
+  try { if (new URL(props.platformBaseUrl || '').hostname === 'api.anthropic.com') defaultProtocol = 'anthropic' } catch {}
+  const protocol = normalizeApiProtocol(model?.apiProtocol || defaultProtocol)
   // 统一展示 modelId（服务端/同步保证有值；缺省用目录 id）
   const modelId = model?.modelId?.trim() || model?.id || readModelIdFromJsCode(model?.jsCode) || ''
   const category = model?.category || 'text'
@@ -706,6 +713,7 @@ const createDialogFormData = (model?: AIModel | null) => {
   return {
     displayName: model?.displayName || '',
     category,
+    supportsVision: model?.supportsVision === true || category === 'vision',
     jsCode: protocol === 'custom'
       ? (model?.jsCode || (category === 'vision' ? DEFAULT_VISION_JS_CODE : DEFAULT_JS_CODE))
       : buildPresetProcessModelJsCode({
@@ -1079,16 +1087,12 @@ const handleOverlayClick = (event: MouseEvent) => {
 }
 
 const handlePrimaryAction = () => {
-  if (isRemote.value) {
-    emit('close')
-    return
-  }
   handleSubmit()
 }
 
 const handleSubmit = () => {
   if (isRemote.value) {
-    emit('close')
+    emit('save', { supportsVision: formData.value.apiProtocol !== 'decision' && formData.value.supportsVision, category: 'text' as const })
     return
   }
   if (!formData.value.displayName.trim()) {
@@ -1100,9 +1104,13 @@ const handleSubmit = () => {
     return
   }
 
+  let options: Partial<AIModel>
+  try { options = advancedOptionsRef.value?.collect() || {} } catch (e) { alert(e instanceof Error ? e.message : String(e)); return }
   const modelData: Partial<AIModel> = {
+    ...options,
     displayName: formData.value.displayName.trim(),
-    category: formData.value.category,
+    category: 'text' as const,
+    supportsVision: formData.value.apiProtocol !== 'decision' && formData.value.supportsVision,
     modelId: formData.value.modelId.trim(),
     jsCode: formData.value.apiProtocol === 'custom' ? formData.value.jsCode : buildCurrentPresetJsCode(),
     enableThinking: formData.value.enableThinking,

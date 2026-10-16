@@ -1,4 +1,6 @@
 import type { AIModel } from './modelConfig'
+import { providerEndpoint } from './providerTransport'
+import { applyModelRequestOptions } from './modelRequestOptions'
 
 type ApiProtocol = AIModel['apiProtocol']
 
@@ -7,6 +9,7 @@ export const normalizeApiProtocol = (protocol?: string | null): ApiProtocol => {
     case 'openai-chat':
     case 'openai-response':
     case 'anthropic':
+    case 'decision':
     case 'custom':
       return protocol
     case 'OpenAI':
@@ -83,7 +86,8 @@ const buildCommonHelpers = () => `
     return '';
   };
 
-  const normalizeBaseUrl = (baseUrl) => String(baseUrl || '').replace(/\\/+$/, '');
+  const endpoint = (resource) => (__ENDPOINT__)(config.baseUrl, resource);
+  const finishPayload = (payload, kind) => (__OPTIONS__)(payload, config, kind, THINKING);
 
   // Chat：关 → enable_thinking / thinking.type；开 → reasoning_effort
   // Responses：关 → reasoning.effort none|minimal；开 → reasoning.effort
@@ -124,14 +128,13 @@ const buildCommonHelpers = () => `
     };
 
     if (config.apiKey) {
-      headers.Authorization = 'Bearer ' + config.apiKey;
+      if (extraHeaders['anthropic-version']) headers['x-api-key'] = config.apiKey;
+      else headers.Authorization = 'Bearer ' + config.apiKey;
     }
 
-    if (config.customHeaders && typeof config.customHeaders === 'object') {
-      Object.assign(headers, config.customHeaders);
-    }
-
-    return headers;
+    const normalized = new Headers(headers);
+    new Headers(config.customHeaders || {}).forEach((value, key) => normalized.set(key, value));
+    return Object.fromEntries(normalized.entries());
   };
 
   const ensureOk = async (response) => {
@@ -158,9 +161,11 @@ const buildCommonHelpers = () => `
     const text = await response.text();
     if (!text) return {};
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      if (parsed.error) throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+      return parsed;
     } catch (error) {
-      throw new Error(text || '响应不是合法 JSON');
+      throw error instanceof SyntaxError ? new Error('响应不是合法 JSON: ' + text.slice(0, 500)) : error;
     }
   };
 
@@ -172,7 +177,7 @@ const buildCommonHelpers = () => `
     let buffer = '';
 
     const flush = async function* (chunkText) {
-      const blocks = chunkText.split(/\\n\\n+/);
+      const blocks = chunkText.split(/\\r?\\n\\r?\\n/);
       buffer = blocks.pop() || '';
 
       for (const block of blocks) {
@@ -191,11 +196,16 @@ const buildCommonHelpers = () => `
         if (!data || data === '[DONE]') continue;
 
         try {
-          yield JSON.parse(data);
-        } catch {}
+          const parsed = JSON.parse(data);
+          if (parsed.error || parsed.type === 'error' || parsed.type === 'response.failed') {
+            throw new Error(parsed.error?.message || parsed.response?.error?.message || '上游流式请求失败');
+          }
+          yield parsed;
+        } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
       }
     };
 
+    try {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
@@ -208,6 +218,7 @@ const buildCommonHelpers = () => `
         break;
       }
     }
+    } finally { try { await reader.cancel(); } finally { reader.releaseLock(); } }
   };
 
   const joinTextParts = (value) => {
@@ -248,6 +259,7 @@ const buildCommonHelpers = () => `
     };
   };
 
+  const chatToolState = new Map();
   const normalizeOpenAIChunk = (payload) => {
     const choice = payload && payload.choices ? payload.choices[0] || {} : {};
     const delta = choice.delta || {};
@@ -261,7 +273,13 @@ const buildCommonHelpers = () => `
       payload.reasoning_content,
       payload.reasoning
     );
-    const toolCalls = delta.tool_calls || message.tool_calls || payload.tool_calls;
+    const toolCalls = (delta.tool_calls || message.tool_calls || payload.tool_calls || []).map((tool, position) => {
+      const key = tool.index ?? position;
+      const previous = chatToolState.get(key) || {};
+      const state = { id: tool.id || previous.id || 'call_' + key, name: tool.function?.name || previous.name || '' };
+      chatToolState.set(key, state);
+      return { ...tool, id: state.id, type: tool.type || 'function', function: { ...tool.function, name: state.name, arguments: tool.function?.arguments || '' } };
+    });
 
     if (!content && !reasoning && (!toolCalls || !toolCalls.length) && !payload.usage) {
       return null;
@@ -301,10 +319,16 @@ const buildCommonHelpers = () => `
   };
 
   const buildResponsesInput = (messages) => {
-    return (messages || []).map((message) => ({
-      role: message.role === 'system' ? 'system' : message.role,
-      content: mapResponsesContent(message.content)
-    }));
+    return (messages || []).flatMap((message) => {
+      if (message.role === 'tool') return [{ type: 'function_call_output', call_id: message.tool_call_id, output: joinTextParts(message.content) }];
+      const items = [];
+      if (message.content) {
+        const content = mapResponsesContent(message.content).map(part => message.role === 'assistant' && part.type === 'input_text' ? { ...part, type: 'output_text' } : part);
+        items.push({ role: message.role, content });
+      }
+      for (const tool of message.tool_calls || []) items.push({ type: 'function_call', call_id: tool.id, name: tool.function.name, arguments: tool.function.arguments || '{}' });
+      return items;
+    });
   };
 
   const extractResponsesText = (payload) => {
@@ -387,6 +411,7 @@ const buildCommonHelpers = () => `
           };
         }
 
+        if (item.type === 'image_url' && /^https?:/.test(imageUrl)) return { type: 'image', source: { type: 'url', url: imageUrl } };
         return null;
       })
       .filter(Boolean);
@@ -397,16 +422,25 @@ const buildCommonHelpers = () => `
     const normalizedMessages = [];
 
     for (const message of messages || []) {
-      if (message.role === 'system') {
+      if (message.role === 'system' || message.role === 'developer') {
         const systemText = typeof message.content === 'string' ? message.content : joinTextParts(message.content);
         if (systemText) systemParts.push(systemText);
         continue;
       }
 
-      normalizedMessages.push({
-        role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: mapAnthropicContent(message.content)
-      });
+      if (message.role === 'tool') {
+        const block = { type: 'tool_result', tool_use_id: message.tool_call_id, content: joinTextParts(message.content) };
+        const last = normalizedMessages[normalizedMessages.length - 1];
+        if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(block);
+        else normalizedMessages.push({ role: 'user', content: [block] });
+        continue;
+      }
+      let content = mapAnthropicContent(message.content);
+      if (message.tool_calls?.length) {
+        content = typeof content === 'string' ? (content ? [{ type: 'text', text: content }] : []) : content;
+        for (const tool of message.tool_calls) content.push({ type: 'tool_use', id: tool.id, name: tool.function.name, input: JSON.parse(tool.function.arguments || '{}') });
+      }
+      normalizedMessages.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content });
     }
 
     return {
@@ -450,7 +484,9 @@ const buildCommonHelpers = () => `
 
 const injectTemplateHelpers = (modelId: string, thinking: ReturnType<typeof normalizeThinkingOptions>) =>
   buildCommonHelpers()
-    .replace('__MODEL_ID__', JSON.stringify(modelId))
+    .replace('__ENDPOINT__', () => providerEndpoint.toString())
+    .replace('__OPTIONS__', () => applyModelRequestOptions.toString())
+    .replace('__MODEL_ID__', () => JSON.stringify(modelId))
     .replace('__THINKING__', JSON.stringify(thinking))
     .split('\n')
     .map((line) => `  ${line}`)
@@ -475,7 +511,8 @@ ${injectTemplateHelpers(modelId, thinking)}
   if (typeof config.maxTokens === 'number') payload.max_tokens = config.maxTokens;
   applyOpenAIThinkingPayload(payload, 'chat');
 
-  const response = await fetch(normalizeBaseUrl(config.baseUrl) + '/v1/chat/completions', {
+  finishPayload(payload, 'chat');
+  const response = await fetch(endpoint('chat/completions'), {
     method: 'POST',
     headers: buildHeaders(),
     body: JSON.stringify(payload),
@@ -484,7 +521,7 @@ ${injectTemplateHelpers(modelId, thinking)}
 
   await ensureOk(response);
 
-  if (payload.stream && response.body) {
+  if (payload.stream && response.body && !(response.headers.get('content-type') || '').includes('application/json')) {
     return (async function* () {
       for await (const event of readSSEPayloads(response)) {
         const chunk = normalizeOpenAIChunk(event);
@@ -513,7 +550,8 @@ ${injectTemplateHelpers(modelId, thinking)}
   }
   applyOpenAIThinkingPayload(payload, 'responses');
 
-  const response = await fetch(normalizeBaseUrl(config.baseUrl) + '/v1/responses', {
+  finishPayload(payload, 'responses');
+  const response = await fetch(endpoint('responses'), {
     method: 'POST',
     headers: buildHeaders(),
     body: JSON.stringify(payload),
@@ -522,7 +560,7 @@ ${injectTemplateHelpers(modelId, thinking)}
 
   await ensureOk(response);
 
-  if (payload.stream && response.body) {
+  if (payload.stream && response.body && !(response.headers.get('content-type') || '').includes('application/json')) {
     return (async function* () {
       const toolCallState = new Map();
 
@@ -580,8 +618,8 @@ ${injectTemplateHelpers(modelId, thinking)}
           continue;
         }
 
-        if (event.usage) {
-          yield event;
+        if (event.usage || event.response?.usage || event.message?.usage) {
+          yield { ...event, usage: event.usage || event.response?.usage || event.message?.usage };
         }
       }
     })();
@@ -618,7 +656,8 @@ ${injectTemplateHelpers(modelId, thinking)}
     payload.thinking = { type: 'disabled' };
   }
 
-  const response = await fetch(normalizeBaseUrl(config.baseUrl) + '/v1/messages', {
+  finishPayload(payload, 'anthropic');
+  const response = await fetch(endpoint('messages'), {
     method: 'POST',
     headers: buildHeaders({
       'anthropic-version': '2023-06-01'
@@ -629,7 +668,7 @@ ${injectTemplateHelpers(modelId, thinking)}
 
   await ensureOk(response);
 
-  if (payload.stream && response.body) {
+  if (payload.stream && response.body && !(response.headers.get('content-type') || '').includes('application/json')) {
     return (async function* () {
       const blockState = new Map();
 
@@ -645,7 +684,7 @@ ${injectTemplateHelpers(modelId, thinking)}
                   id: event.content_block.id || 'tool_use',
                   function: {
                     name: event.content_block.name || '',
-                    arguments: event.content_block.input ? JSON.stringify(event.content_block.input) : ''
+                    arguments: event.content_block.input && Object.keys(event.content_block.input).length ? JSON.stringify(event.content_block.input) : ''
                   }
                 }
               ]
@@ -683,8 +722,8 @@ ${injectTemplateHelpers(modelId, thinking)}
           }
         }
 
-        if (event.usage) {
-          yield event;
+        if (event.usage || event.response?.usage || event.message?.usage) {
+          yield { ...event, usage: event.usage || event.response?.usage || event.message?.usage };
         }
       }
     })();
@@ -707,6 +746,8 @@ export const buildPresetProcessModelJsCode = (options: {
       return buildOpenAIResponsesTemplate(modelId, thinking)
     case 'anthropic':
       return buildAnthropicTemplate(modelId, thinking)
+    case 'decision':
+      return ''
     case 'custom':
     case 'openai-chat':
     default:

@@ -28,6 +28,8 @@ pub struct RequestLog {
 pub struct ModelCallRequest {
     pub request_id: String, // 关联的请求ID
     pub query: String,      // 需要查询的内容
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -275,10 +277,11 @@ impl RequestLogger {
     }
 
     // 新增：发送模型调用请求事件
-    pub fn send_model_call_request(&self, request_id: String, query: String) {
+    pub fn send_model_call_request(&self, request_id: String, query: String, images: Vec<String>) {
         let event = ModelCallRequest {
             request_id,
             query,
+            images,
             timestamp: Utc::now(),
         };
 

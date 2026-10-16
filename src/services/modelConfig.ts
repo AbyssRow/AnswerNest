@@ -1,5 +1,6 @@
 import { reactive, watch, computed } from 'vue'
 import { normalizeApiProtocol } from './modelProtocol'
+import { inferSupportsVision, modelSupportsVision } from '../utils/questionAttachments'
 
 // AI 平台配置接口
 export interface AIPlatform {
@@ -11,6 +12,7 @@ export interface AIPlatform {
   enabled: boolean
   models: AIModel[]
   customHeaders?: Record<string, string>
+  proxyUrl?: string // 空值沿用系统代理；支持 HTTP(S)/SOCKS5(H)
   description?: string
   icon?: string        // 平台图标
   isRemote?: boolean   // 是否来自远程同步（禁止编辑/删除）
@@ -35,8 +37,19 @@ export interface AIModel {
   maxTokens: number
   temperature: number
   topP: number
+  frequencyPenalty?: number
+  presencePenalty?: number
+  seed?: number
+  stop?: string[]
+  topK?: number
+  thinkingBudget?: number
+  upstream?: 'auto' | 'openai' | 'deepseek' | 'qwen' | 'gemini' | 'openrouter' | 'groq' | 'mistral' | 'xai' | 'moonshot' | 'zhipu' | 'volcengine' | 'siliconflow' | 'compatible'
+  thinkingMode?: 'auto' | 'budget' | 'adaptive'
+  extraBody?: Record<string, unknown>
+  omitParameters?: string[]
   enabled: boolean
-  category: 'text' | 'vision' | 'summary'  // 模型分类：文本模型、视觉模型或总结模型
+  category: 'text' | 'vision' | 'summary'  // 角色只用 text；旧的 vision 在读取时并入视觉开关
+  supportsVision?: boolean  // 能看图。在模型设置里开，不再单独占一类
   description?: string
   jsCode?: string  // 仅自定义协议使用；远程模型忽略此字段
   icon?: string    // 模型图标
@@ -54,7 +67,7 @@ export interface AIModel {
   thinkingOffResponsesEffort?: ThinkingOffResponsesEffort
   /** 开启思考时的强度（默认 medium） */
   thinkingEffort?: ThinkingEffort
-  apiProtocol?: 'openai-chat' | 'openai-response' | 'anthropic' | 'custom'
+  apiProtocol?: 'openai-chat' | 'openai-response' | 'anthropic' | 'decision' | 'custom'
 }
 
 // 模型配置设置接口
@@ -246,6 +259,16 @@ const getPlatformApiKey = (platforms: AIPlatform[], preferredPlatform?: AIPlatfo
   return platforms.find(platform => platform.apiKey?.trim())?.apiKey || ''
 }
 
+const migrateStoredModel = (model: AIModel): AIModel => {
+  const wasVision = model.category === 'vision'
+  const next: AIModel = wasVision || model.category === 'summary'
+    ? { ...model, category: 'text' }
+    : model
+  if (wasVision) next.supportsVision = true
+  else if (next.supportsVision === undefined && inferSupportsVision(next)) next.supportsVision = true
+  return next
+}
+
 const sanitizeStoredPlatforms = (platforms: AIPlatform[]): AIPlatform[] => {
   const groupedPlatforms = new Map<string, AIPlatform[]>()
 
@@ -284,7 +307,7 @@ const sanitizeStoredPlatforms = (platforms: AIPlatform[]): AIPlatform[] => {
           if (nextModel.isRemote) {
             delete nextModel.jsCode
           }
-          return nextModel
+          return migrateStoredModel(nextModel)
         })
       )
     )
@@ -389,6 +412,9 @@ class ModelConfigManager {
   private remotePlatformsSyncAt = 0
   private pendingRemotePlatformsSync: Promise<void> | null = null
   private shouldPersistLoadedSettings = false
+  // localStorage 为空（全新安装，或更名/换 identifier 后 WebView 数据目录变了）时，
+  // 尝试从 model_config.json 恢复。恢复完成前不能把空配置写回该文件，否则会覆盖唯一的副本。
+  private restoringFromFile = false
 
   constructor() {
     this.settings = reactive(this.loadSettings())
@@ -397,6 +423,59 @@ class ModelConfigManager {
       this.saveSettings()
     }
     this.setupAutoSave()
+    if (this.localStorageWasEmpty()) {
+      this.restoringFromFile = true
+      void this.restoreFromFile().finally(() => {
+        this.restoringFromFile = false
+      })
+    }
+  }
+
+  private localStorageWasEmpty(): boolean {
+    try {
+      return localStorage.getItem(MODEL_SETTINGS_STORAGE_KEY) === null
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 解析已保存的配置：过滤无名平台并清理旧字段。
+   */
+  private parseStoredSettings(parsedSettings: any): { settings: ModelSettings; changed: boolean } {
+    const loadedSettings: ModelSettings = {
+      ...DEFAULT_MODEL_SETTINGS,
+      ...parsedSettings,
+      platforms: (parsedSettings.platforms || []).filter((p: AIPlatform) => p.name?.trim()),
+    }
+    const sanitizedSettings: ModelSettings = {
+      ...loadedSettings,
+      platforms: sanitizeStoredPlatforms(loadedSettings.platforms || []),
+    }
+    return {
+      settings: sanitizedSettings,
+      changed: JSON.stringify(loadedSettings) !== JSON.stringify(sanitizedSettings),
+    }
+  }
+
+  /**
+   * 从 exe 同级目录的 model_config.json 恢复模型配置（仅在 localStorage 为空时调用）
+   */
+  private async restoreFromFile(): Promise<void> {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const content = await invoke<string>('read_model_config')
+      if (!content?.trim()) return
+      const parsed = JSON.parse(content)
+      if (!Array.isArray(parsed?.platforms) || parsed.platforms.length === 0) return
+      const { settings } = this.parseStoredSettings(parsed)
+      Object.assign(this.settings, settings)
+      this.normalizeSelectedModels()
+      console.log('已从 model_config.json 恢复模型配置')
+    } catch (error) {
+      // 非 Tauri 环境、文件不存在或内容损坏：保持默认配置
+      console.warn('从 model_config.json 恢复模型配置失败:', error)
+    }
   }
 
   /**
@@ -406,19 +485,9 @@ class ModelConfigManager {
     try {
       const stored = localStorage.getItem(MODEL_SETTINGS_STORAGE_KEY)
       if (stored) {
-        const parsedSettings = JSON.parse(stored)
-        const loadedSettings: ModelSettings = {
-          ...DEFAULT_MODEL_SETTINGS,
-          ...parsedSettings,
-          platforms: (parsedSettings.platforms || []).filter((p: AIPlatform) => p.name?.trim()),
-        }
-        const sanitizedSettings: ModelSettings = {
-          ...loadedSettings,
-          platforms: sanitizeStoredPlatforms(loadedSettings.platforms || []),
-        }
-
-        this.shouldPersistLoadedSettings = JSON.stringify(loadedSettings) !== JSON.stringify(sanitizedSettings)
-        return sanitizedSettings
+        const { settings, changed } = this.parseStoredSettings(JSON.parse(stored))
+        this.shouldPersistLoadedSettings = changed
+        return settings
       }
     } catch (error) {
       console.warn('加载模型配置失败，使用默认配置:', error)
@@ -469,9 +538,16 @@ class ModelConfigManager {
     const enabledPlatforms = this.settings.platforms.filter(platform => platform.enabled !== false)
     const allModels = enabledPlatforms.flatMap(platform => platform.models || [])
     const enabledModels = allModels.filter(model => model.enabled !== false)
-    const textModelIds = new Set(enabledModels.filter(model => model.category === 'text').map(model => model.id))
-    const summaryModelIds = new Set(enabledModels.map(model => model.id))
-    const visionModelIds = new Set(enabledModels.filter(model => model.category === 'vision').map(model => model.id))
+    if (this.settings.selectedVisionModel) {
+      this.settings.selectedTextModels = [
+        this.settings.selectedVisionModel,
+        ...(this.settings.selectedTextModels || [])
+      ]
+      this.settings.selectedVisionModel = null
+    }
+
+    const textModelIds = new Set(enabledModels.filter(model => model.category !== 'summary').map(model => model.id))
+    const summaryModelIds = new Set(enabledModels.filter(model => modelSupportsVision(model)).map(model => model.id))
 
     const normalizedTextModels = this.dedupeAndFilterModelIds(
       [
@@ -495,9 +571,7 @@ class ModelConfigManager {
     this.settings.selectedTextModel = normalizedTextModels[0] || null
     this.settings.selectedSummaryModels = normalizedSummaryModels
     this.settings.selectedSummaryModel = normalizedSummaryModels[0] || null
-    this.settings.selectedVisionModel = this.settings.selectedVisionModel && visionModelIds.has(this.settings.selectedVisionModel)
-      ? this.settings.selectedVisionModel
-      : null
+    this.settings.selectedVisionModel = null
   }
 
   private clearSelectedModelsForPlatform(platformId: string): void {
@@ -666,6 +740,12 @@ class ModelConfigManager {
           maxTokens: rm.maxTokens ?? 4096,
           temperature: rm.temperature ?? 0.7,
           topP: rm.topP ?? 0.9,
+          category: 'text',
+          supportsVision: typeof rm.supportsVision === 'boolean'
+            ? rm.supportsVision
+            : typeof existingModel?.supportsVision === 'boolean'
+              ? existingModel.supportsVision
+              : (rm.category === 'vision' || inferSupportsVision(rm)),
           enableThinking: rm.enableThinking ?? isKnownThinkingModel,
           thinkingOffEnableThinkingFalse: rm.thinkingOffEnableThinkingFalse ?? true,
           thinkingOffThinkingTypeDisabled: rm.thinkingOffThinkingTypeDisabled ?? false,
@@ -709,6 +789,7 @@ class ModelConfigManager {
         apiKey: preservedApiKey,
         enabled: existing?.enabled ?? true,
         customHeaders: existing?.customHeaders,
+        proxyUrl: existing?.proxyUrl,
         models,
       }
     })
@@ -805,6 +886,7 @@ class ModelConfigManager {
    * 异步写入 model_config.json
    */
   private async saveToFile(): Promise<void> {
+    if (this.restoringFromFile) return
     try {
       const { invoke } = await import('@tauri-apps/api/core')
       await invoke('write_model_config', { content: JSON.stringify(this.settings) })
@@ -971,7 +1053,11 @@ class ModelConfigManager {
     if (!this.settings.selectedSummaryModels) this.settings.selectedSummaryModels = []
     
     const isSelected = this.settings.selectedSummaryModels.includes(modelId)
-    
+    if (!isSelected) {
+      const model = this.settings.platforms.flatMap(p => p.models).find(m => m.id === modelId)
+      if (!modelSupportsVision(model)) return
+    }
+
     if (isSelected) {
       // 如果已经选中，则取消全部选中
       this.settings.selectedSummaryModels = []
@@ -1157,6 +1243,10 @@ class ModelConfigManager {
       const model = platform.models.find(m => m.id === modelId)
       if (model) {
         Object.assign(model, updates)
+        if (updates.supportsVision === false && this.settings.selectedSummaryModels?.includes(modelId)) {
+          this.settings.selectedSummaryModels = []
+          this.settings.selectedSummaryModel = null
+        }
         break
       }
     }

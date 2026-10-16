@@ -28,7 +28,6 @@ const {
   downloadFileName,
   downloadUrl,
   nativeUpdater,
-  checkForUpdates,
   closeDialog: handleUpdateDialogClose,
   handleDialogDownload,
   handleLater,
@@ -358,8 +357,6 @@ onMounted(async () => {
     console.log('主题系统初始化完成');
     await initializationService.initialize();
     console.log('应用初始化完成');
-    
-    await checkForUpdates();
   } catch (error) {
     console.error('应用初始化失败:', error);
   }

@@ -31,7 +31,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          <span>当前端口号: <strong>{{ currentPort || '未设置' }}</strong></span>
+          <span>当前端口号: <strong>{{ currentPort || '未设置' }}</strong>。带图片的题需要重新复制这份配置，并在 OCS 打开「图片题优化」。</span>
         </div>
       </div>
     </div>
@@ -63,13 +63,14 @@ const ocsConfig = [{
   "name": "AnswerNest题库(自建版)",
   "homepage": "https://github.com/AbyssRow/AnswerNest",
   "url": "http://localhost:3002/query",
-  "method": "get",
+  "method": "post",
   "type": "GM_xmlhttpRequest",
   "contentType": "json",
   "data": {
-    "title": "${title}",
-    "options": "${options}",
-    "type": "${type}"
+    "title": { "handler": "return (env) => env.suggestion_title || env.title" },
+    "options": { "handler": "return (env) => env.suggestion_options || env.options" },
+    "type": "${type}",
+    "images": { "handler": "return (env) => env.images || []" }
   },
   "handler": "return (res)=>res.code === 0 ? [res.message, undefined] : [res.data.question,res.data.answer,{ai: res.data.is_ai}]"
 }]

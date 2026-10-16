@@ -991,11 +991,22 @@ pub fn read_config() -> Result<String, String> {
     }
 }
 
+/// 先写临时文件再替换，避免写到一半崩溃/断电后配置文件被截断成无效 JSON
+fn write_file_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = path.with_file_name(tmp_name);
+    std::fs::write(&tmp_path, content).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        e.to_string()
+    })
+}
+
 /// 写入配置文件
 #[tauri::command]
 pub fn write_config(content: String) -> Result<(), String> {
-    let path = get_config_path();
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    write_file_atomic(&get_config_path(), &content)
 }
 
 /// 读取模型配置文件
@@ -1012,8 +1023,7 @@ pub fn read_model_config() -> Result<String, String> {
 /// 写入模型配置文件
 #[tauri::command]
 pub fn write_model_config(content: String) -> Result<(), String> {
-    let path = get_exe_dir().join("model_config.json");
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    write_file_atomic(&get_exe_dir().join("model_config.json"), &content)
 }
 
 #[tauri::command]

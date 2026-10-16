@@ -10,9 +10,15 @@ use std::sync::OnceLock;
 use strsim::normalized_levenshtein;
 
 /// 提取字符串中所有 URL（http/https），返回排序后的列表
+fn url_regex() -> &'static Regex {
+    // 题库每次查询都会对每一行调用，必须只编译一次
+    static URL_REGEX: OnceLock<Regex> = OnceLock::new();
+    URL_REGEX.get_or_init(|| Regex::new(r"https?://[^\s]+").unwrap())
+}
+
 fn extract_urls(text: &str) -> Vec<String> {
     // 匹配 http(s):// 开头，到空白字符或常见中文标点结束
-    let re = Regex::new(r"https?://[^\s]+").unwrap();
+    let re = url_regex();
     let mut urls: Vec<String> = re
         .find_iter(text)
         .map(|m| {
@@ -33,7 +39,7 @@ fn extract_urls(text: &str) -> Vec<String> {
 
 /// 将字符串中所有 URL 替换为统一占位符，用于相似度比较
 fn normalize_urls(text: &str) -> String {
-    let re = Regex::new(r"https?://[^\s]+").unwrap();
+    let re = url_regex();
     // 先替换，再去掉占位符末尾可能残留的中文标点（不影响相似度计算）
     re.replace_all(text, "__URL__").to_string()
 }
@@ -995,11 +1001,17 @@ pub async fn update_question(
     answer: Option<String>,
     question_type: Option<String>,
 ) -> Result<(), String> {
+    if matches!(&question, Some(q) if q.trim().is_empty()) {
+        return Err("题目内容不能为空".to_string());
+    }
+
     let conn = get_conn()?;
+    // 多个字段要么一起生效要么都不生效，避免只保存了一半
+    let tx = conn.unchecked_transaction().map_err(|e| format!("{}", e))?;
     let mut has_updates = false;
 
     if let Some(q) = question {
-        conn.execute(
+        tx.execute(
             "UPDATE AIResponses SET Question = ? WHERE Id = ?",
             rusqlite::params![q, id],
         )
@@ -1007,7 +1019,9 @@ pub async fn update_question(
         has_updates = true;
     }
     if let Some(o) = options {
-        conn.execute(
+        // 空选项存为 NULL，这样用户清空选项后可以真正生效
+        let o = Some(o).filter(|v| !v.trim().is_empty());
+        tx.execute(
             "UPDATE AIResponses SET Options = ? WHERE Id = ?",
             rusqlite::params![o, id],
         )
@@ -1015,7 +1029,7 @@ pub async fn update_question(
         has_updates = true;
     }
     if let Some(a) = answer {
-        conn.execute(
+        tx.execute(
             "UPDATE AIResponses SET Answer = ? WHERE Id = ?",
             rusqlite::params![a, id],
         )
@@ -1023,7 +1037,8 @@ pub async fn update_question(
         has_updates = true;
     }
     if let Some(t) = question_type {
-        conn.execute(
+        let t = Some(t).filter(|v| !v.trim().is_empty());
+        tx.execute(
             "UPDATE AIResponses SET QuestionType = ? WHERE Id = ?",
             rusqlite::params![t, id],
         )
@@ -1032,13 +1047,14 @@ pub async fn update_question(
     }
 
     if has_updates {
-        conn.execute(
+        tx.execute(
             "UPDATE AIResponses SET IsPendingCorrection = 0 WHERE Id = ?",
             rusqlite::params![id],
         )
         .map_err(|e| format!("{}", e))?;
     }
 
+    tx.commit().map_err(|e| format!("{}", e))?;
     Ok(())
 }
 
@@ -1101,11 +1117,13 @@ pub async fn delete_question(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub async fn delete_questions(ids: Vec<i64>) -> Result<(), String> {
     let conn = get_conn()?;
-    // 由于 rusqlite 批量删除比较麻烦，这里采用循环方式
+    // 放进同一个事务：逐条自动提交会对大批量删除逐次落盘，非常慢
+    let tx = conn.unchecked_transaction().map_err(|e| format!("{}", e))?;
     for id in ids {
-        conn.execute("DELETE FROM AIResponses WHERE Id = ?", [id])
+        tx.execute("DELETE FROM AIResponses WHERE Id = ?", [id])
             .map_err(|e| format!("{}", e))?;
     }
+    tx.commit().map_err(|e| format!("{}", e))?;
     Ok(())
 }
 
@@ -1213,9 +1231,32 @@ pub async fn rename_folder(id: i64, new_name: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn move_folder(id: i64, parent_id: i64) -> Result<(), String> {
     let conn = get_conn()?;
-    // 检查防止循环嵌套（虽然前端会有检查，但后端建议也做简单保护）
+
+    if id <= 0 {
+        return Err("默认文件夹不能被移动".to_string());
+    }
+    if parent_id < 0 {
+        return Err("不能移动到该位置".to_string());
+    }
     if id == parent_id {
-        return Err("Cannot move folder to itself".to_string());
+        return Err("不能把文件夹移动到它自己里面".to_string());
+    }
+    // parent_id = 0 表示移动到根目录，其余必须是存在的文件夹
+    if parent_id > 0 {
+        let parent_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM Folders WHERE Id = ?)",
+                [parent_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("{}", e))?;
+        if !parent_exists {
+            return Err("目标文件夹不存在".to_string());
+        }
+        // 防止移动到自己的子文件夹中：否则会形成环，整棵子树会从目录树中消失
+        if collect_folder_subtree_ids(&conn, id)?.contains(&parent_id) {
+            return Err("不能把文件夹移动到它自己的子文件夹里".to_string());
+        }
     }
 
     conn.execute(

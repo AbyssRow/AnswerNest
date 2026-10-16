@@ -316,6 +316,7 @@ import QuestionBatchDeleteConfirmDialog from './QuestionBatchDeleteConfirmDialog
 import QuestionEditor from './QuestionEditor.vue';
 import QuestionDetail from './QuestionDetail.vue';
 import { claimExclusiveMenu, useExclusiveMenu } from '../../composables/useExclusiveMenu';
+import { errorMessage } from '../../utils/errorMessage';
 
 interface Props {
   selectedFolderId?: string | null;
@@ -954,7 +955,8 @@ const saveEdit = async () => {
 
     await databaseService.updateQuestion(updatedQuestion.id, {
       question: updatedQuestion.question,
-      options: updatedQuestion.options || null,
+      // 保留空字符串：用户清空选项/题型时需要真正写入数据库，而不是被当作“未修改”
+      options: updatedQuestion.options,
       answer: updatedQuestion.answer,
       question_type: updatedQuestion.question_type
     });
@@ -974,6 +976,7 @@ const saveEdit = async () => {
     console.log('题目更新成功');
   } catch (error) {
     console.error('更新题目失败:', error);
+    alert('保存题目失败: ' + errorMessage(error));
   } finally {
     isSavingEdit.value = false;
   }
@@ -1346,7 +1349,7 @@ const deleteQuestion = async () => {
     await loadQuestions(props.selectedFolderId, currentPage.value);
   } catch (error) {
     console.error('删除题目失败:', error);
-    alert('删除题目失败: ' + (error as Error).message);
+    alert('删除题目失败: ' + errorMessage(error));
   }
   hideContextMenu();
 };
@@ -1384,7 +1387,7 @@ const confirmBatchDeleteQuestions = async () => {
     cancelBatchDeleteQuestions();
   } catch (error) {
     console.error('批量删除题目失败:', error);
-    alert('批量删除题目失败: ' + (error as Error).message);
+    alert('批量删除题目失败: ' + errorMessage(error));
     batchDeleteDialog.value.loading = false;
   }
 };

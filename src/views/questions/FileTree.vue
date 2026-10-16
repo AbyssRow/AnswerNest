@@ -101,6 +101,7 @@ import DeleteConfirmDialog from './DeleteConfirmDialog.vue';
 import { databaseService, type Folder } from '../../services/database';
 import { settingsManager } from '../../services/settings';
 import { claimExclusiveMenu } from '../../composables/useExclusiveMenu';
+import { errorMessage } from '../../utils/errorMessage';
 
 interface TreeNode {
   id: string;
@@ -468,27 +469,60 @@ const handleMoveFolder = async (data: { sourceId: string; targetId: string; posi
   try {
     console.log('FileTree: 处理文件夹移动', data);
     
-    const sourceIdNum = parseInt(data.sourceId);
-    const targetIdNum = parseInt(data.targetId);
-    
-    console.log('FileTree: 移动参数', { sourceIdNum, targetIdNum, position: data.position });
-    
+    // 默认文件夹（0）和虚拟的“待修正”节点不是真实可移动的文件夹
+    if (data.sourceId === '0') {
+      alert('默认文件夹不能被移动');
+      return;
+    }
+    if (data.sourceId === PENDING_CORRECTION_NODE_ID || data.targetId === PENDING_CORRECTION_NODE_ID) {
+      return;
+    }
+
+    const sourceNode = findNodeById(treeData.value, data.sourceId);
+    if (!sourceNode) return;
+
+    const sourceIdNum = parseInt(data.sourceId, 10);
+
+    // 拖到节点中间 = 放进该文件夹；拖到上/下边缘 = 与该节点同级（放进它的父文件夹）。
+    // 文件夹没有手动排序，所以“前/后”只决定层级，不决定顺序。
+    let newParentId: number;
+    if (data.position === 'inside') {
+      newParentId = parseInt(data.targetId, 10);
+    } else {
+      const ancestors = findNodeAncestorIds(treeData.value, data.targetId) ?? [];
+      newParentId = ancestors.length ? parseInt(ancestors[ancestors.length - 1], 10) : 0;
+    }
+
+    // 不能移动到自己或自己的子文件夹中（否则整棵子树会从目录树里消失）
+    if (collectNodeIds(sourceNode).includes(newParentId)) {
+      alert('不能把文件夹移动到它自己或它的子文件夹里');
+      return;
+    }
+
+    // 已经在目标位置，无需操作
+    const sourceAncestors = findNodeAncestorIds(treeData.value, data.sourceId) ?? [];
+    const currentParentId = sourceAncestors.length ? parseInt(sourceAncestors[sourceAncestors.length - 1], 10) : 0;
+    if (currentParentId === newParentId) return;
+
+    console.log('FileTree: 移动参数', { sourceIdNum, newParentId, position: data.position });
+
     // 保存当前展开状态
     const currentExpandedState = new Set(expandedFolders.value);
-    
+
     // 调用数据库服务移动文件夹
-    await databaseService.moveFolder(sourceIdNum, targetIdNum);
-    
+    await databaseService.moveFolder(sourceIdNum, newParentId);
+
     // 重新加载数据以更新UI
     await loadData();
-    
-    // 恢复展开状态
+
+    // 恢复展开状态，并展开新的父文件夹让用户看到移动结果
+    if (newParentId > 0) currentExpandedState.add(String(newParentId));
     expandedFolders.value = currentExpandedState;
-    
+
     console.log('FileTree: 文件夹移动成功');
   } catch (error) {
     console.error('FileTree: 移动文件夹失败', error);
-    // 这里可以添加用户友好的错误提示
+    alert('移动文件夹失败: ' + errorMessage(error));
   }
 };
 
@@ -674,7 +708,7 @@ const handleDeleteConfirm = async () => {
   } catch (error) {
     console.error('删除文件夹失败:', error);
     // 显示错误提示
-    alert(error.message || '删除文件夹失败，请重试');
+    alert(errorMessage(error, '删除文件夹失败，请重试'));
   }
   
   // 关闭弹窗
@@ -697,7 +731,7 @@ const handleClearQuestionsConfirm = async () => {
     emit('questions-cleared', clearQuestionsDialog.folderId);
   } catch (error: any) {
     console.error('清除文件夹题目失败:', error);
-    alert(error?.message || '清除文件夹题目失败，请重试');
+    alert(errorMessage(error, '清除文件夹题目失败，请重试'));
   } finally {
     clearQuestionsDialog.visible = false;
     clearQuestionsDialog.folderName = '';

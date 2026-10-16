@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, State};
 use tokio_stream::wrappers::BroadcastStream;
 use uuid;
@@ -86,10 +87,20 @@ fn check_admin_token(auth: &Option<String>) -> bool {
     !admin_token.is_empty() && token == admin_token
 }
 
+/// 按字符数（而非字节数）截断，避免在多字节字符（如中文）中间切开导致 panic
+fn truncate_chars(text: &str, max_chars: usize) -> &str {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => &text[..idx],
+        None => text,
+    }
+}
+
 /// 检测文本中是否包含URL
 fn contains_url(text: &str) -> bool {
-    let url_regex = Regex::new(r"https?://[^\s]+").unwrap();
-    url_regex.is_match(text)
+    static URL_REGEX: OnceLock<Regex> = OnceLock::new();
+    URL_REGEX
+        .get_or_init(|| Regex::new(r"https?://[^\s]+").unwrap())
+        .is_match(text)
 }
 
 fn resolve_request_origin(headers: &HeaderMap) -> String {
@@ -320,11 +331,9 @@ fn parse_same_question_result(content: &str) -> Option<i64> {
         return None;
     }
 
-    let json_str = if let Some(start) = trimmed.find('{') {
-        let end = trimmed.rfind('}').unwrap_or(trimmed.len() - 1);
-        &trimmed[start..=end]
-    } else {
-        trimmed
+    let json_str = match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(start), Some(end)) if end > start => &trimmed[start..=end],
+        _ => trimmed,
     };
 
     let value: Value = serde_json::from_str(json_str).ok()?;
@@ -1094,7 +1103,7 @@ pub async fn start_server(
 
     let cors = warp::cors()
         .allow_any_origin()
-        .allow_headers(vec!["content-type"])
+        .allow_headers(vec!["content-type", "authorization"])
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]);
 
     // 将需要记录日志的路由组合在一起（query路由已经有自己的详细日志记录）
@@ -1275,10 +1284,17 @@ pub async fn start_server(
         ip
     };
 
-    // 在后台启动服务器
-    let server_handle = tokio::spawn(async move {
-        warp::serve(routes).run((bind_ip, port)).await;
-    });
+    // 先同步绑定端口：端口被占用/无权限时直接把错误返回给界面，
+    // 而不是在后台任务里 panic 后界面仍显示“运行中”。
+    let (_addr, server_future) = warp::serve(routes)
+        .try_bind_ephemeral((bind_ip, port))
+        .map_err(|e| {
+            format!(
+                "无法在 {}:{} 启动服务（端口可能已被其他程序占用，请在设置中更换端口）: {}",
+                bind_address, port, e
+            )
+        })?;
+    let server_handle = tokio::spawn(server_future);
 
     // 更新状态
     let result = {
@@ -1617,7 +1633,7 @@ fn extract_answer_from_json(json_content: &str) -> String {
         if let Some(m) = caps.get(1) {
             let ans = m.as_str().trim().to_string();
             if !ans.is_empty() {
-                println!("✅ 从\"答案: \"标记后提取到文本: {}", &ans[..std::cmp::min(ans.len(), 100)]);
+                println!("✅ 从\"答案: \"标记后提取到文本: {}", truncate_chars(&ans, 100));
                 return ans;
             }
         }
@@ -1629,7 +1645,7 @@ fn extract_answer_from_json(json_content: &str) -> String {
         // 检查是否像是一个直接答案（简短文本,不含复杂结构）
         let lines: Vec<&str> = cleaned_trimmed.lines().filter(|l| !l.trim().is_empty()).collect();
         if lines.len() <= 3 {
-            println!("✅ 将纯文本内容作为答案使用: {}", &cleaned_trimmed[..std::cmp::min(cleaned_trimmed.len(), 100)]);
+            println!("✅ 将纯文本内容作为答案使用: {}", truncate_chars(cleaned_trimmed, 100));
             return cleaned_trimmed.to_string();
         }
     }
@@ -1747,7 +1763,31 @@ fn is_model_error(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod same_question_tests {
-    use super::{classify_model_failure, parse_same_question_result};
+    use super::{
+        classify_model_failure, extract_answer_from_json, parse_same_question_result,
+        truncate_chars,
+    };
+
+    #[test]
+    fn truncate_chars_never_splits_multibyte_text() {
+        let text = "传动角".repeat(60);
+        assert_eq!(truncate_chars(&text, 100).chars().count(), 100);
+        assert_eq!(truncate_chars("短文本", 100), "短文本");
+    }
+
+    #[test]
+    fn long_chinese_plain_text_answer_does_not_panic() {
+        let text = "凸轮机构中从动件运动规律取决于凸轮轮廓曲线的形状".repeat(4);
+        assert_eq!(extract_answer_from_json(&text), text);
+        let labelled = format!("答案：{}", text);
+        assert_eq!(extract_answer_from_json(&labelled), text);
+    }
+
+    #[test]
+    fn same_question_result_tolerates_reversed_braces() {
+        assert_eq!(parse_same_question_result("} oops {"), None);
+        assert_eq!(parse_same_question_result("{ no closing"), None);
+    }
 
     #[test]
     fn parses_same_true_with_matched_id() {

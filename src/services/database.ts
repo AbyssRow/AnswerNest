@@ -461,22 +461,23 @@ class DatabaseService {
     if (!this.isTauri) {
       const question = mockAIResponses.find(q => q.id === questionId);
       if (!question) throw new Error('题目不存在');
-      if (updateData.question) question.question = updateData.question;
-      if (updateData.options) question.options = updateData.options;
-      if (updateData.answer) question.answer = updateData.answer;
-      if (updateData.question_type) question.question_type = updateData.question_type;
+      if (updateData.question != null) question.question = updateData.question;
+      if (updateData.options != null) question.options = updateData.options;
+      if (updateData.answer != null) question.answer = updateData.answer;
+      if (updateData.question_type != null) question.question_type = updateData.question_type;
       question.is_pending_correction = false;
       return;
     }
     
     try {
       // Rust Command: update_question(id, question, options, answer, question_type)
+      // undefined/null 表示“不修改”；空字符串表示“清空”（后端会存为 NULL），不能用 || 吞掉
       await invoke('update_question', {
         id: questionId,
-        question: updateData.question || null,
-        options: updateData.options || null,
-        answer: updateData.answer || null,
-        questionType: updateData.question_type || null
+        question: updateData.question ?? null,
+        options: updateData.options ?? null,
+        answer: updateData.answer ?? null,
+        questionType: updateData.question_type ?? null
       });
     } catch (error) {
       console.error('更新题目失败:', error);

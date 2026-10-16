@@ -18,6 +18,7 @@ AnswerNest 是一款专为 OCS 网课助手设计的 AI 题库软件，可以方
 - 提供商独立的 HTTP(S) / SOCKS5 代理和自定义请求头
 - 上游异步 Batch API：OpenAI、Anthropic、Mistral、Groq、通义百炼、OpenRouter
 - 图片题：OCS 的图片优化可以把图片一起发给支持视觉的模型
+- 总结时联网搜索：OpenRouter 的模型可以在被选为总结模型时先联网搜索这道题，再整理最终答案（普通答题不联网）
 - 本地题库管理与缓存：题目编辑、文件夹分类、导入导出
 
 ## 更干净

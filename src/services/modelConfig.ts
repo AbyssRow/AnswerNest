@@ -46,6 +46,8 @@ export interface AIModel {
   stop?: string[]
   topK?: number
   thinkingBudget?: number
+  /** 被用作总结模型时，总结前先联网搜索这道题（仅支持联网搜索的提供商，如 OpenRouter） */
+  webSearch?: boolean
   upstream?: 'auto' | 'openai' | 'deepseek' | 'qwen' | 'gemini' | 'openrouter' | 'groq' | 'mistral' | 'xai' | 'moonshot' | 'zhipu' | 'volcengine' | 'siliconflow' | 'compatible'
   thinkingMode?: 'auto' | 'budget' | 'adaptive'
   extraBody?: Record<string, unknown>

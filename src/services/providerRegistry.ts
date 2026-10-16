@@ -61,6 +61,16 @@ export const providers: ProviderDef[] = [
   { id: 'lmstudio', name: 'LM Studio（本地）', baseUrl: 'http://localhost:1234/v1', apiStyle: 'openai-chat', upstream: 'compatible', batch: null, group: 'local', noKey: true },
 ]
 
+/**
+ * 能靠普通请求参数完成联网搜索的参数方言（结果由服务端搜索后直接并入回答，不需要客户端多轮调用工具）。
+ * 目前只有 OpenRouter（web 插件）。以后要支持别的提供商，在这里加上，并在 modelRequestOptions 里补对应参数。
+ */
+export const WEB_SEARCH_UPSTREAMS: ReadonlyArray<NonNullable<AIModel['upstream']>> = ['openrouter']
+
+export function upstreamSupportsWebSearch(upstream?: string): boolean {
+  return !!upstream && (WEB_SEARCH_UPSTREAMS as readonly string[]).includes(upstream)
+}
+
 /** 自定义提供商可选的标准 API */
 export const customApiStyles: { value: ApiStyle; label: string; endpoint: string; batch: BatchSpec }[] = [
   { value: 'openai-chat', label: 'OpenAI Chat Completions 兼容', endpoint: '/v1/chat/completions', batch: null },

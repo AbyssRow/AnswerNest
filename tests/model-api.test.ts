@@ -4,7 +4,7 @@ import { buildPresetProcessModelJsCode } from '../src/services/modelProtocol'
 import { providerEndpoint, providerHeaders, providerClientOptions, validateProxyUrl } from '../src/services/providerTransport'
 import { BatchApi, batchRowsFromPrompts, parseBatchJsonl } from '../src/services/batchApi'
 import { collectModelOptions } from '../src/services/modelOptionsForm'
-import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform } from '../src/services/providerRegistry'
+import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform, upstreamSupportsWebSearch } from '../src/services/providerRegistry'
 import { adoptRemotePlatforms } from '../src/services/remoteCatalogMigration'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -419,6 +419,32 @@ test('no address belonging to the original author is left in the app, config or 
   // 防止因为路径不对、什么都没扫就“通过”
   assert.ok(scanned > 50, `只扫描了 ${scanned} 个文件，路径可能不对`)
   assert.deepEqual(found, [])
+})
+test('OpenRouter web search is added only when the caller (summary phase) turns it on', async () => {
+  const router = { baseUrl: 'https://openrouter.ai/api/v1' }
+  const body = async (modelId: string, extra: any = {}, protocol = 'openai-chat') =>
+    (await execute(protocol, { ...router, modelId, enableThinking: false, ...extra })).request.body
+  // off by default, and the saved webSearch flag alone never searches: normal answering must stay offline
+  assert.equal((await body('openai/gpt-4o')).plugins, undefined)
+  assert.equal((await body('openai/gpt-4o', { webSearch: true })).plugins, undefined)
+  // the summary phase turns searchEnabled on
+  const on = await body('openai/gpt-4o', { webSearch: true, searchEnabled: true })
+  assert.equal(on.plugins.length, 1)
+  assert.equal(on.plugins[0].id, 'web')
+  assert.equal(on.plugins[0].max_results, 5)
+  assert.match(on.plugins[0].search_prompt, /不要出现链接/)
+  // :online already searches by itself; do not stack the plugin on top
+  assert.equal((await body('openai/gpt-4o:online', { searchEnabled: true })).plugins, undefined)
+  // the user's own plugin config wins (e.g. another engine) and is not duplicated
+  const custom = await body('openai/gpt-4o', { searchEnabled: true, extraBody: { plugins: [{ id: 'web', engine: 'firecrawl' }] } })
+  assert.deepEqual(custom.plugins, [{ id: 'web', engine: 'firecrawl' }])
+  // other providers and other protocols never get the OpenRouter plugin
+  assert.equal((await execute('openai-chat', { baseUrl: 'https://api.openai.com/v1', modelId: 'gpt-4.1', searchEnabled: true })).request.body.plugins, undefined)
+  assert.equal((await body('openai/gpt-4o', { searchEnabled: true }, 'openai-response')).plugins, undefined)
+  assert.equal((await body('anthropic/claude-sonnet-4-5', { searchEnabled: true }, 'anthropic')).plugins, undefined)
+  // the settings UI only offers the switch where this is implemented
+  assert.equal(upstreamSupportsWebSearch('openrouter'), true)
+  for (const other of ['openai', 'qwen', 'deepseek', 'compatible', 'auto', undefined]) assert.equal(upstreamSupportsWebSearch(other as any), false)
 })
 test('third-party OpenAI-compatible relays get each model\'s official parameters, whatever the host', async () => {
   const relay = { baseUrl: 'https://relay.example.com/v1' }

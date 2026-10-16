@@ -2058,7 +2058,9 @@ const callModelWithStreaming = async (
   requestId: string,
   onChunk?: (content: string) => void,
   onReasoning?: (text: string) => void,
-  media?: { images?: string[]; attachImages?: boolean; fileText?: string }
+  media?: { images?: string[]; attachImages?: boolean; fileText?: string },
+  // 仅总结阶段传 webSearch: true：这时才给请求加上联网搜索参数，普通答题永远不联网
+  options?: { webSearch?: boolean }
 ) => {
   if (isRequestCancelled(requestId)) {
     throw createCancelledRequestError()
@@ -2128,7 +2130,8 @@ const callModelWithStreaming = async (
     apiKey: platform.apiKey,
     baseUrl: platform.baseUrl,
     model: runtimeModelId,
-    modelId: runtimeModelId
+    modelId: runtimeModelId,
+    searchEnabled: options?.webSearch === true
   }
 
   // 读取超时配置（秒转毫秒）
@@ -2943,7 +2946,9 @@ ${baseCombinedResponse}
                   requestId,
                   (content) => updateMultiModelStreamingResponse(requestId, summaryKey, stripMarkdownCodeBlock(content)),
                   (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning),
-                  answerMedia
+                  answerMedia,
+                  // 模型上开了「总结时联网搜索」才在总结阶段联网
+                  { webSearch: model.webSearch === true }
                 )
               },
               (attempt, maxAttempts) => {

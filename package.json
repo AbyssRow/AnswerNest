@@ -1,7 +1,7 @@
 {
   "name": "answernest",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "test:model-api": "node scripts/test-model-api.mjs",

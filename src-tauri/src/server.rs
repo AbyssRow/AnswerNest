@@ -1,6 +1,7 @@
 use crate::app_activity::{begin_server_activity, end_server_activity};
 use crate::database::{
-    get_ai_response_by_id, insert_ai_response, query_database_candidates, query_database_exact,
+    get_ai_response_by_id, images_fingerprint, insert_ai_response, query_database_candidates,
+    query_database_exact,
     set_question_pending_correction, QuestionMatch,
 };
 use crate::types::{
@@ -421,6 +422,7 @@ async fn wait_and_store_ai_answer(
                 return (status, QueryResponse::error(err_msg));
             }
 
+            let image_hash = images_fingerprint(&request.images);
             let mut extracted_answer = extract_answer_from_json(&model_content);
             if model_content.contains("题目不完整,无法确定具体问题.") {
                 extracted_answer = String::new();
@@ -453,6 +455,7 @@ async fn wait_and_store_ai_answer(
                     request.options.clone(),
                     request.query_type.clone(),
                     true,
+                    image_hash.as_deref(),
                 ) {
                     Ok(id) => {
                         println!("✅ AI response stored to database");
@@ -492,6 +495,7 @@ async fn resolve_query_with_same_question_check(
     request_id: &str,
     request_origin: &str,
 ) -> (u16, QueryResponse) {
+    let image_hash = images_fingerprint(&request.images);
     let mut has_url = !request.images.is_empty() || contains_url(&request.title);
     if let Some(options) = &request.options {
         if !has_url {
@@ -500,7 +504,7 @@ async fn resolve_query_with_same_question_check(
     }
 
     // 1) 精确命中直接返回
-    match query_database_exact(&request.title, request.options.as_deref()).await {
+    match query_database_exact(&request.title, request.options.as_deref(), image_hash.as_deref()).await {
         Ok(exact_hits) if !exact_hits.is_empty() => {
             println!("✅ 精确匹配命中: {} 条", exact_hits.len());
             let data_list: Vec<QueryData> = exact_hits
@@ -538,6 +542,7 @@ async fn resolve_query_with_same_question_check(
     let candidates = match query_database_candidates(
         &request.title,
         request.options.as_deref(),
+        image_hash.as_deref(),
         SAME_QUESTION_CANDIDATE_LIMIT,
     )
     .await
@@ -587,6 +592,7 @@ async fn resolve_query_with_same_question_check(
                                 request.options.clone(),
                                 request.query_type.clone(),
                                 matched.is_ai,
+                                image_hash.as_deref(),
                             ) {
                                 Ok(id) => {
                                     println!(
@@ -620,7 +626,11 @@ async fn resolve_query_with_same_question_check(
                     }
 
                     // matched_id 不在候选中，尝试按 id 查库
-                    if let Ok(matched) = get_ai_response_by_id(matched_id) {
+                    // 按 id 取回的记录同样要图片指纹一致，不能把别的图片题的答案当成这题的
+                    if let Some(matched) = get_ai_response_by_id(matched_id)
+                        .ok()
+                        .filter(|m| m.image_hash.as_deref().filter(|h| !h.is_empty()) == image_hash.as_deref())
+                    {
                         let answer = normalize_answer_against_options(
                             &matched.answer,
                             request.options.as_deref(),
@@ -632,6 +642,7 @@ async fn resolve_query_with_same_question_check(
                                 request.options.clone(),
                                 request.query_type.clone(),
                                 matched.is_ai,
+                                image_hash.as_deref(),
                             ) {
                                 Ok(id) => id,
                                 Err(_) => matched.id,
@@ -1778,6 +1789,42 @@ mod same_question_tests {
         truncate_chars,
     };
 
+
+    /// OCS 网课助手 5.2.1 按我们给出的题库配置实际发送/接收的数据格式
+    #[test]
+    fn ocs_wire_format_matches_ocs_5_2_1() {
+        use crate::types::{QueryData, QueryRequest, QueryResponse};
+
+        // 请求：POST JSON，字段 title/options/type/images（旧配置没有 images）
+        let sent = r#"{"title":"观察下图 [图片1] ","options":"A. 甲\nB. 乙","type":"single","images":["data:image/png;base64,AAAA"]}"#;
+        let req: QueryRequest = serde_json::from_str(sent).expect("OCS request must deserialize");
+        assert_eq!(req.title, "观察下图 [图片1] ");
+        assert_eq!(req.options.as_deref(), Some("A. 甲\nB. 乙"));
+        assert_eq!(req.query_type.as_deref(), Some("single"));
+        assert_eq!(req.images.len(), 1);
+        let legacy: QueryRequest =
+            serde_json::from_str(r#"{"title":"t","options":"","type":"unknown"}"#).unwrap();
+        assert!(legacy.images.is_empty());
+
+        // 响应：成功 → code=1，data 是单个对象，带 question/answer/is_ai（配置里的 handler 读取这些字段）
+        let ok = serde_json::to_value(QueryResponse::success(vec![QueryData {
+            id: 7,
+            question: "q".to_string(),
+            answer: "甲###乙".to_string(),
+            is_ai: true,
+            is_pending_correction: false,
+        }]))
+        .unwrap();
+        assert_eq!(ok["code"], 1);
+        assert!(ok["data"].is_object());
+        assert_eq!(ok["data"]["answer"], "甲###乙");
+        assert_eq!(ok["data"]["is_ai"], true);
+
+        // 响应：失败/未找到 → code=0 且带 message（handler: res.code === 0 ? [res.message, undefined]）
+        let err = serde_json::to_value(QueryResponse::error("错误: 未选择模型".to_string())).unwrap();
+        assert_eq!(err["code"], 0);
+        assert_eq!(err["message"], "错误: 未选择模型");
+    }
     #[test]
     fn request_log_body_omits_large_data_urls_but_keeps_http_urls() {
         use super::request_body_for_log;

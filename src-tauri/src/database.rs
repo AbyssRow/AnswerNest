@@ -1128,9 +1128,9 @@ pub async fn copy_question(question_id: i64, target_folder_id: i64) -> Result<()
         get_target_folder_id(&conn, target_folder_id).map_err(|e| format!("{}", e))?;
 
     // 获取原题
-    let (q, o, a, qt, ia, ipc): (String, Option<String>, String, Option<String>, bool, bool) = conn
+    let (q, o, a, qt, ia, ipc, ih): (String, Option<String>, String, Option<String>, bool, bool, Option<String>) = conn
         .query_row(
-            "SELECT Question, Options, Answer, QuestionType, IsAi, COALESCE(IsPendingCorrection, 0) FROM AIResponses WHERE Id = ?",
+            "SELECT Question, Options, Answer, QuestionType, IsAi, COALESCE(IsPendingCorrection, 0), ImageHash FROM AIResponses WHERE Id = ?",
             [question_id],
             |row| {
                 Ok((
@@ -1140,15 +1140,16 @@ pub async fn copy_question(question_id: i64, target_folder_id: i64) -> Result<()
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .map_err(|e| format!("{}", e))?;
 
     conn.execute(
-        "INSERT INTO AIResponses (Question, Options, Answer, QuestionType, FolderId, IsAi, IsPendingCorrection, CreateTime)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-        rusqlite::params![q, o, a, qt, actual_target_id, ia, ipc],
+        "INSERT INTO AIResponses (Question, Options, Answer, QuestionType, FolderId, IsAi, IsPendingCorrection, ImageHash, CreateTime)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        rusqlite::params![q, o, a, qt, actual_target_id, ia, ipc, ih],
     ).map_err(|e| format!("{}", e))?;
 
     Ok(())
@@ -1453,6 +1454,8 @@ pub struct QuestionMatch {
     pub answer: String,
     pub is_ai: bool,
     pub is_pending_correction: bool,
+    /// 题目附带图片的指纹；纯文本题为 None
+    pub image_hash: Option<String>,
     pub score: f64,
 }
 
@@ -1466,7 +1469,17 @@ fn score_question_row(
     answer: String,
     is_ai: bool,
     is_pending_correction: bool,
+    query_image_hash: &Option<String>,
+    db_image_hash: Option<String>,
 ) -> Option<QuestionMatch> {
+    // OCS 的图片优化会把题干里的图片链接换成 [图片1] 这样的占位符，不同图片的题干可能完全相同，
+    // 所以图片指纹必须一致才能算同一题（纯文本题两边都是 None）。
+    if query_image_hash.as_deref().filter(|h| !h.is_empty())
+        != db_image_hash.as_deref().filter(|h| !h.is_empty())
+    {
+        return None;
+    }
+
     let query_urls = extract_urls(title);
     if !query_urls.is_empty() {
         let db_urls = extract_urls(&question);
@@ -1508,6 +1521,7 @@ fn score_question_row(
         answer,
         is_ai,
         is_pending_correction,
+        image_hash: db_image_hash,
         score: final_similarity,
     })
 }
@@ -1538,6 +1552,7 @@ fn is_exact_question_match(
 fn scan_question_matches(
     title: &str,
     options: Option<&str>,
+    image_hash: Option<&str>,
 ) -> Result<Vec<QuestionMatch>, Box<dyn std::error::Error + Send + Sync>> {
     let db_path = get_db_path();
     let title_clone = title.to_string();
@@ -1546,7 +1561,7 @@ fn scan_question_matches(
 
     let conn = Connection::open(&db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT Id, Question, Options, Answer, IsAi, COALESCE(IsPendingCorrection, 0) FROM AIResponses",
+        "SELECT Id, Question, Options, Answer, IsAi, COALESCE(IsPendingCorrection, 0), ImageHash FROM AIResponses",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -1557,12 +1572,14 @@ fn scan_question_matches(
             row.get::<_, String>(3)?,
             row.get::<_, bool>(4)?,
             row.get::<_, bool>(5)?,
+            row.get::<_, Option<String>>(6)?,
         ))
     })?;
 
+    let query_image_hash = image_hash.map(str::to_string);
     let mut results = Vec::new();
     for row in rows {
-        let (id, question, db_options, answer, is_ai, is_pending_correction) = row?;
+        let (id, question, db_options, answer, is_ai, is_pending_correction, db_image_hash) = row?;
         if let Some(matched) = score_question_row(
             &title_clone,
             &query_options,
@@ -1573,6 +1590,8 @@ fn scan_question_matches(
             answer,
             is_ai,
             is_pending_correction,
+            &query_image_hash,
+            db_image_hash,
         ) {
             results.push(matched);
         }
@@ -1586,13 +1605,15 @@ fn scan_question_matches(
 pub async fn query_database_exact(
     title: &str,
     options: Option<&str>,
+    image_hash: Option<&str>,
 ) -> Result<Vec<QuestionMatch>, Box<dyn std::error::Error + Send + Sync>> {
     let title = title.to_string();
     let options = options.map(|s| s.to_string());
+    let image_hash = image_hash.map(|s| s.to_string());
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Vec<QuestionMatch>, Box<dyn std::error::Error + Send + Sync>> {
-            let matches = scan_question_matches(&title, options.as_deref())?;
+            let matches = scan_question_matches(&title, options.as_deref(), image_hash.as_deref())?;
             Ok(matches
                 .into_iter()
                 .filter(|m| is_exact_question_match(&title, options.as_deref(), m))
@@ -1608,14 +1629,16 @@ pub async fn query_database_exact(
 pub async fn query_database_candidates(
     title: &str,
     options: Option<&str>,
+    image_hash: Option<&str>,
     limit: usize,
 ) -> Result<Vec<QuestionMatch>, Box<dyn std::error::Error + Send + Sync>> {
     let title = title.to_string();
     let options = options.map(|s| s.to_string());
+    let image_hash = image_hash.map(|s| s.to_string());
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Vec<QuestionMatch>, Box<dyn std::error::Error + Send + Sync>> {
-            let matches = scan_question_matches(&title, options.as_deref())?;
+            let matches = scan_question_matches(&title, options.as_deref(), image_hash.as_deref())?;
             Ok(matches
                 .into_iter()
                 .filter(|m| !is_exact_question_match(&title, options.as_deref(), m))
@@ -1638,7 +1661,7 @@ pub async fn query_database(
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Vec<(i64, String, String, bool, bool)>, Box<dyn std::error::Error + Send + Sync>> {
-            let matches = scan_question_matches(&title, options.as_deref())?;
+            let matches = scan_question_matches(&title, options.as_deref(), None)?;
             Ok(matches
                 .into_iter()
                 .take(50)
@@ -1658,7 +1681,7 @@ pub fn get_ai_response_by_id(
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
     })?;
     let row = conn.query_row(
-        "SELECT Id, Question, Options, Answer, IsAi, COALESCE(IsPendingCorrection, 0) FROM AIResponses WHERE Id = ?",
+        "SELECT Id, Question, Options, Answer, IsAi, COALESCE(IsPendingCorrection, 0), ImageHash FROM AIResponses WHERE Id = ?",
         [id],
         |row| {
             Ok(QuestionMatch {
@@ -1668,6 +1691,7 @@ pub fn get_ai_response_by_id(
                 answer: row.get(3)?,
                 is_ai: row.get(4)?,
                 is_pending_correction: row.get(5)?,
+                image_hash: row.get(6)?,
                 score: 1.0,
             })
         },
@@ -1681,11 +1705,13 @@ pub fn insert_ai_response(
     options: Option<String>,
     question_type: Option<String>,
     is_ai: bool,
+    image_hash: Option<&str>,
 ) -> Result<i64, String> {
     if answer.trim().is_empty() {
         return Err("AI处理结果答案为空，不保存题目".to_string());
     }
 
+    let image_hash = image_hash.filter(|h| !h.is_empty());
     let conn = get_conn()?;
     let folder_id = get_configured_save_folder_id(&conn);
     let folder_name: String = conn
@@ -1697,11 +1723,31 @@ pub fn insert_ai_response(
         .unwrap_or_else(|_| "默认文件夹".to_string());
 
     conn.execute(
-        "INSERT INTO AIResponses (Question, Answer, Options, QuestionType, IsAi, IsPendingCorrection, CreateTime, FolderId, FolderName) VALUES (?, ?, ?, ?, ?, 0, datetime('now'), ?, ?)",
-        rusqlite::params![question, answer, options, question_type, is_ai, folder_id, folder_name],
+        "INSERT INTO AIResponses (Question, Answer, Options, QuestionType, IsAi, IsPendingCorrection, CreateTime, FolderId, FolderName, ImageHash) VALUES (?, ?, ?, ?, ?, 0, datetime('now'), ?, ?, ?)",
+        rusqlite::params![question, answer, options, question_type, is_ai, folder_id, folder_name, image_hash],
     ).map_err(|e| format!("{}", e))?;
 
     Ok(conn.last_insert_rowid())
+}
+
+/// 题目所附图片的指纹（FNV-1a 64 位，输出稳定、与 Rust 版本无关）。没有图片时返回 None。
+/// 用来区分“题干相同、图片不同”的题：OCS 图片优化会把图片链接换成 [图片1] 之类的占位符。
+pub fn images_fingerprint(images: &[String]) -> Option<String> {
+    let images: Vec<&String> = images.iter().filter(|s| !s.trim().is_empty()).collect();
+    if images.is_empty() {
+        return None;
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for image in &images {
+        for byte in image.trim().as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        // 分隔符，避免 ["ab","c"] 与 ["a","bc"] 得到相同指纹
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Some(format!("{}-{:016x}", images.len(), hash))
 }
 
 pub fn get_username() -> Result<String, String> {
@@ -1899,6 +1945,14 @@ pub fn init_database_schema(db_path: &str) -> Result<(), String> {
         "ALTER TABLE AIResponses ADD COLUMN IsPendingCorrection BOOLEAN DEFAULT 0",
         &["UPDATE AIResponses SET IsPendingCorrection = 0 WHERE IsPendingCorrection IS NULL"],
     )?;
+    // 图片题的指纹：旧数据为 NULL，表示没有图片
+    ensure_column(
+        &conn,
+        &mut ai_response_columns,
+        "ImageHash",
+        "ALTER TABLE AIResponses ADD COLUMN ImageHash TEXT",
+        &[],
+    )?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS RequestLogs (
@@ -1943,7 +1997,7 @@ pub fn init_database_schema(db_path: &str) -> Result<(), String> {
 mod tests {
     use super::{
         compute_query_match_score, get_table_columns, init_database_schema, is_exact_match_score,
-        is_exact_question_match, QuestionMatch,
+        is_exact_question_match, images_fingerprint, score_question_row, QuestionMatch,
     };
     use rusqlite::Connection;
     use uuid::Uuid;
@@ -1972,6 +2026,51 @@ mod tests {
         assert!(!is_exact_match_score(0.999));
     }
 
+
+    #[test]
+    fn image_fingerprint_is_stable_and_distinguishes_images() {
+        let a = vec!["data:image/png;base64,AAAA".to_string()];
+        let b = vec!["data:image/png;base64,BBBB".to_string()];
+        assert_eq!(images_fingerprint(&[]), None);
+        assert_eq!(images_fingerprint(&["  ".to_string()]), None);
+        assert_eq!(images_fingerprint(&a), images_fingerprint(&a));
+        assert_ne!(images_fingerprint(&a), images_fingerprint(&b));
+        // 分隔符保证 ["ab","c"] 和 ["a","bc"] 不会碰撞
+        assert_ne!(
+            images_fingerprint(&["ab".to_string(), "c".to_string()]),
+            images_fingerprint(&["a".to_string(), "bc".to_string()])
+        );
+        // 固定值：指纹写进用户数据库，算法不能悄悄变化
+        assert_eq!(images_fingerprint(&["a".to_string()]).as_deref(), Some("1-089bc907b544c769"));
+    }
+
+    #[test]
+    fn same_title_with_different_images_never_matches() {
+        // OCS 图片优化把图片链接换成 [图片1]，不同图片的题干会完全一样
+        let title = "观察下图 [图片1] ，判断正确的是";
+        let score = |query_hash: Option<&str>, db_hash: Option<&str>| {
+            score_question_row(
+                title,
+                &None,
+                false,
+                1,
+                title.to_string(),
+                None,
+                "A".to_string(),
+                true,
+                false,
+                &query_hash.map(str::to_string),
+                db_hash.map(str::to_string),
+            )
+        };
+        assert!(score(Some("1-aaaa"), Some("1-aaaa")).is_some());
+        assert!(score(Some("1-aaaa"), Some("1-bbbb")).is_none());
+        // 图片题不能命中没有图片的旧记录，纯文本题也不能命中图片题
+        assert!(score(Some("1-aaaa"), None).is_none());
+        assert!(score(None, Some("1-aaaa")).is_none());
+        // 纯文本题照常匹配
+        assert!(score(None, None).is_some());
+    }
     #[test]
     fn exact_question_match_requires_identical_options_when_present() {
         let matched = QuestionMatch {
@@ -1981,6 +2080,7 @@ mod tests {
             answer: "A.1".to_string(),
             is_ai: true,
             is_pending_correction: false,
+            image_hash: None,
             score: 1.0,
         };
         assert!(is_exact_question_match(

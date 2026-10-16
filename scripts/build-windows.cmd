@@ -4,7 +4,7 @@ cd /d "%~dp0.."
 
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
-echo ==> Build NSIS
+echo [Build NSIS]
 call npm run tauri -- build --bundles nsis
 set "BUILD_EXIT=%ERRORLEVEL%"
 
@@ -13,6 +13,6 @@ if not "%BUILD_EXIT%"=="0" (
   exit /b %BUILD_EXIT%
 )
 
-echo ==> Done
+echo [Done]
 dir /b "%CD%\src-tauri\target\release\bundle\nsis\*"
 exit /b 0

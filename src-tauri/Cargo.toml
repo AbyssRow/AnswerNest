@@ -1,6 +1,6 @@
 [package]
 name = "answernest"
-version = "1.0.5"
+version = "1.1.0"
 description = "AnswerNest - 支持 OCS 网课助手的 AI 题库管理软件"
 authors = ["AbyssRow"]
 edition = "2021"

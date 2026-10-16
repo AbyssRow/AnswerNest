@@ -253,7 +253,7 @@
               </div>
               <div class="model-info">
                 <div class="model-header">
-                  <h5 class="model-name">{{ model.displayName }}<template v-if="model.supportsVision"> · 视觉</template><template v-if="model.webSearch"> · 联网</template></h5>
+                  <h5 class="model-name">{{ model.displayName }}<template v-if="model.supportsVision"> · 视觉</template></h5>
                  
                 </div>
                 

@@ -4,7 +4,7 @@ import { buildPresetProcessModelJsCode } from '../src/services/modelProtocol'
 import { providerEndpoint, providerHeaders, providerClientOptions, validateProxyUrl } from '../src/services/providerTransport'
 import { BatchApi, batchRowsFromPrompts, parseBatchJsonl } from '../src/services/batchApi'
 import { collectModelOptions } from '../src/services/modelOptionsForm'
-import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform, upstreamSupportsWebSearch } from '../src/services/providerRegistry'
+import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform } from '../src/services/providerRegistry'
 import { adoptRemotePlatforms } from '../src/services/remoteCatalogMigration'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -420,32 +420,6 @@ test('no address belonging to the original author is left in the app, config or 
   assert.ok(scanned > 50, `只扫描了 ${scanned} 个文件，路径可能不对`)
   assert.deepEqual(found, [])
 })
-test('OpenRouter web search is added only when the caller (summary phase) turns it on', async () => {
-  const router = { baseUrl: 'https://openrouter.ai/api/v1' }
-  const body = async (modelId: string, extra: any = {}, protocol = 'openai-chat') =>
-    (await execute(protocol, { ...router, modelId, enableThinking: false, ...extra })).request.body
-  // off by default, and the saved webSearch flag alone never searches: normal answering must stay offline
-  assert.equal((await body('openai/gpt-4o')).plugins, undefined)
-  assert.equal((await body('openai/gpt-4o', { webSearch: true })).plugins, undefined)
-  // the summary phase turns searchEnabled on
-  const on = await body('openai/gpt-4o', { webSearch: true, searchEnabled: true })
-  assert.equal(on.plugins.length, 1)
-  assert.equal(on.plugins[0].id, 'web')
-  assert.equal(on.plugins[0].max_results, 5)
-  assert.match(on.plugins[0].search_prompt, /不要出现链接/)
-  // :online already searches by itself; do not stack the plugin on top
-  assert.equal((await body('openai/gpt-4o:online', { searchEnabled: true })).plugins, undefined)
-  // the user's own plugin config wins (e.g. another engine) and is not duplicated
-  const custom = await body('openai/gpt-4o', { searchEnabled: true, extraBody: { plugins: [{ id: 'web', engine: 'firecrawl' }] } })
-  assert.deepEqual(custom.plugins, [{ id: 'web', engine: 'firecrawl' }])
-  // other providers and other protocols never get the OpenRouter plugin
-  assert.equal((await execute('openai-chat', { baseUrl: 'https://api.openai.com/v1', modelId: 'gpt-4.1', searchEnabled: true })).request.body.plugins, undefined)
-  assert.equal((await body('openai/gpt-4o', { searchEnabled: true }, 'openai-response')).plugins, undefined)
-  assert.equal((await body('anthropic/claude-sonnet-4-5', { searchEnabled: true }, 'anthropic')).plugins, undefined)
-  // the settings UI only offers the switch where this is implemented
-  assert.equal(upstreamSupportsWebSearch('openrouter'), true)
-  for (const other of ['openai', 'qwen', 'deepseek', 'compatible', 'auto', undefined]) assert.equal(upstreamSupportsWebSearch(other as any), false)
-})
 test('third-party OpenAI-compatible relays get each model\'s official parameters, whatever the host', async () => {
   const relay = { baseUrl: 'https://relay.example.com/v1' }
   const chat = async (modelId: string, on: boolean) => (await execute('openai-chat', { ...relay, modelId, enableThinking: on })).request.body
@@ -522,4 +496,127 @@ test('billed Batch creation is not retried on uncertain network errors', async (
   const api = new BatchApi(platform, 'openai', async () => { count++; if (count === 1) return jsonResponse({ id: 'file-recover' }); throw new Error('network lost') })
   await assert.rejects(api.create(JSON.stringify(row), row.url), /file-recover/)
   assert.equal(count, 2)
+})
+test('web search: query comes from the title, options only when configured or the title is short', async () => {
+  const { buildSearchQuery, extractQuestionParts, cleanQuestionText } = await import('../src/services/webSearch')
+  const prompt = (title: string, options = '') => `你是一个专业的答题助手。\n\n【题目类型：单选题】\n【题目】\n${title}\n${options ? `【选项】\n${options}\n` : ''}\n请作答，并在最后输出答案 JSON：`
+  const long = '光合作用中，植物吸收的二氧化碳最终被固定到哪种有机物中？'
+  const opts = 'A. 葡萄糖\nB. 蛋白质'
+  assert.deepEqual(extractQuestionParts(prompt(long, opts)), { title: long, options: 'A. 葡萄糖 B. 蛋白质' })
+  assert.equal(buildSearchQuery(prompt(long, opts), { optionsMode: 'never', maxQueryChars: 300 }), long)
+  assert.equal(buildSearchQuery(prompt(long, opts), { optionsMode: 'auto', maxQueryChars: 300 }), long)
+  assert.equal(buildSearchQuery(prompt(long, opts), { optionsMode: 'always', maxQueryChars: 300 }), `${long} A. 葡萄糖 B. 蛋白质`)
+  // a generic stem is useless alone, so auto adds the options
+  assert.equal(buildSearchQuery(prompt('下列说法正确的是', opts), { optionsMode: 'auto', maxQueryChars: 300 }), '下列说法正确的是 A. 葡萄糖 B. 蛋白质')
+  assert.equal(buildSearchQuery(prompt('下列说法正确的是', opts), { optionsMode: 'never', maxQueryChars: 300 }), '下列说法正确的是')
+  assert.equal(buildSearchQuery(prompt(long), { optionsMode: 'always', maxQueryChars: 10 }), long.slice(0, 10))
+  assert.equal(buildSearchQuery(prompt('  \n '), { optionsMode: 'always', maxQueryChars: 300 }), '')
+  // not our prompt format: use the whole text
+  assert.equal(buildSearchQuery('中国的首都是哪里', { optionsMode: 'never', maxQueryChars: 300 }), '中国的首都是哪里')
+  assert.equal(cleanQuestionText('【单选题】1. 水的化学式是____。'), '水的化学式是 。')
+  assert.equal(cleanQuestionText('12、地球绕太阳公转一周约（ ）天'), '地球绕太阳公转一周约 天')
+})
+test('web search: Firecrawl and Exa requests follow the official parameters', async () => {
+  const { buildFirecrawlRequest, buildExaRequest, normalizeWebSearchConfig } = await import('../src/services/webSearch')
+  const base = normalizeWebSearchConfig({ enabled: true, apiKey: 'k', maxResults: 4, timeoutSec: 20 })
+  const fc = buildFirecrawlRequest(base, '问题')
+  assert.equal(fc.url, 'https://api.firecrawl.dev/v2/search')
+  assert.equal(fc.headers.Authorization, 'Bearer k')
+  assert.deepEqual(fc.body, { query: '问题', limit: 4, sources: ['web'], timeout: 20000, scrapeOptions: { formats: [{ type: 'markdown' }], onlyMainContent: true } })
+  const fcDomains = buildFirecrawlRequest({ ...base, firecrawlScrape: false, baseUrl: 'https://fc.example.com/', includeDomains: 'https://zhihu.com/a, baike.baidu.com', excludeDomains: 'x.com' }, 'q')
+  assert.equal(fcDomains.url, 'https://fc.example.com/v2/search')
+  assert.equal('scrapeOptions' in fcDomains.body, false)
+  assert.deepEqual(fcDomains.body.includeDomains, ['zhihu.com', 'baike.baidu.com'])
+  assert.equal('excludeDomains' in fcDomains.body, false)
+  const fcExclude = buildFirecrawlRequest({ ...base, excludeDomains: 'a.com b.com' }, 'q')
+  assert.deepEqual(fcExclude.body.excludeDomains, ['a.com', 'b.com'])
+
+  const exa = buildExaRequest({ ...base, provider: 'exa', exaType: 'fast' }, '问题')
+  assert.equal(exa.url, 'https://api.exa.ai/search')
+  assert.equal(exa.headers['x-api-key'], 'k')
+  assert.deepEqual(exa.body, { query: '问题', type: 'fast', numResults: 4, contents: { highlights: { maxCharacters: 2000 } } })
+  const exaText = buildExaRequest({ ...base, provider: 'exa', exaContent: 'text', maxCharsPerResult: 5000, includeDomains: 'a.com', excludeDomains: 'b.com' }, 'q')
+  assert.deepEqual(exaText.body.contents, { text: { maxCharacters: 5000 } })
+  assert.deepEqual([exaText.body.includeDomains, exaText.body.excludeDomains], [['a.com'], ['b.com']])
+  assert.throws(() => buildExaRequest({ ...base, provider: 'exa', baseUrl: 'ftp://x' }, 'q'), /HTTP/)
+})
+test('web search: config from a settings file is clamped and defaulted', async () => {
+  const { normalizeWebSearchConfig, webSearchReady } = await import('../src/services/webSearch')
+  const empty = normalizeWebSearchConfig(undefined)
+  assert.equal(empty.enabled, false)
+  assert.equal(empty.maxResults, 3)
+  assert.equal(empty.optionsMode, 'auto')
+  assert.equal(empty.firecrawlScrape, true)
+  const messy = normalizeWebSearchConfig({ enabled: true, provider: 'bogus' as any, apiKey: '  key ', maxResults: 99, timeoutSec: -4, maxCharsPerResult: 'x' as any, exaType: 'slow' as any, optionsMode: 'bad' as any })
+  assert.deepEqual([messy.provider, messy.apiKey, messy.maxResults, messy.timeoutSec, messy.maxCharsPerResult, messy.exaType, messy.optionsMode], ['firecrawl', 'key', 10, 3, 2000, 'auto', 'auto'])
+  assert.equal(webSearchReady(messy), true)
+  assert.equal(webSearchReady({ ...messy, apiKey: '' }), false)
+  assert.equal(webSearchReady({ ...messy, enabled: false }), false)
+})
+test('web search: results of both services are parsed into readable context', async () => {
+  const { parseFirecrawlResponse, parseExaResponse, formatSearchContext } = await import('../src/services/webSearch')
+  const fc = parseFirecrawlResponse({ success: true, data: { web: [
+    { title: ' 标题 一 ', url: 'https://a.com', description: '摘要', markdown: '正文'.repeat(10) },
+    { title: '二', url: 'https://b.com', description: '只有摘要' },
+    { url: 'https://empty.com' }
+  ] } }, 12)
+  assert.equal(fc.length, 2)
+  assert.deepEqual(fc[0], { title: '标题 一', url: 'https://a.com', content: '正文正文正文正文正文正文…' })
+  assert.equal(fc[1].content, '只有摘要')
+  assert.equal(parseFirecrawlResponse({ data: [{ title: 'old', url: 'u', description: 'd' }] }, 100)[0].content, 'd')
+  const exa = parseExaResponse({ results: [{ title: 'T', url: 'https://c.com', highlights: ['片段一', '片段二'] }, { title: 'U', url: 'https://d.com', text: '全文' }] }, 100)
+  assert.equal(exa[0].content, '片段一\n…\n片段二')
+  assert.equal(exa[1].content, '全文')
+  assert.equal(formatSearchContext([...fc, ...exa].slice(0, 2)), '[1] 标题 一\nhttps://a.com\n正文正文正文正文正文正文…\n\n[2] 二\nhttps://b.com\n只有摘要')
+  assert.deepEqual(parseExaResponse({}, 10), [])
+})
+test('web search: runWebSearch reports success, failures and timeouts without throwing', async () => {
+  const { runWebSearch, normalizeWebSearchConfig } = await import('../src/services/webSearch')
+  const prompt = '【题目】\n中国的首都是哪个城市\n\n请作答'
+  const config = normalizeWebSearchConfig({ enabled: true, apiKey: 'k', provider: 'firecrawl' })
+  let seen: any
+  const ok = await runWebSearch(config, prompt, { fetchImpl: async (url, init) => {
+    seen = { url, init }
+    return new Response(JSON.stringify({ data: { web: [{ title: '北京', url: 'https://x.com', description: '中国首都是北京' }] } }), { status: 200 })
+  } })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.query, '中国的首都是哪个城市')
+  assert.match(ok.text, /\[1\] 北京/)
+  assert.equal(seen.url, 'https://api.firecrawl.dev/v2/search')
+  assert.equal(JSON.parse(seen.init.body).query, '中国的首都是哪个城市')
+
+  const unauthorized = await runWebSearch(config, prompt, { fetchImpl: async () => new Response(JSON.stringify({ error: 'Unauthorized: Invalid token' }), { status: 401 }) })
+  assert.equal(unauthorized.ok, false)
+  assert.match(unauthorized.text, /^错误: Firecrawl 返回 401.*API Key.*Invalid token/)
+  const noCredit = await runWebSearch({ ...config, provider: 'exa' }, prompt, { fetchImpl: async () => new Response('{"error":"credits"}', { status: 402 }) })
+  assert.match(noCredit.text, /^错误: Exa 返回 402.*额度/)
+  assert.match((await runWebSearch(config, prompt, { fetchImpl: async () => new Response('{"data":{"web":[]}}', { status: 200 }) })).text, /没有搜到/)
+  assert.match((await runWebSearch(config, prompt, { fetchImpl: async () => new Response('<html>', { status: 200 }) })).text, /不是 JSON/)
+  assert.match((await runWebSearch(config, prompt, { fetchImpl: async () => { throw new Error('connection refused') } })).text, /connection refused/)
+  assert.match((await runWebSearch({ ...config, apiKey: '' }, prompt)).text, /API Key/)
+  assert.match((await runWebSearch(config, '【题目】\n  \n\n请作答')).text, /题目内容为空/)
+
+  const waitForAbort = (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+  })
+  const slow = await runWebSearch({ ...config, timeoutSec: 0.05 }, prompt, { fetchImpl: waitForAbort })
+  assert.equal(slow.ok, false)
+  assert.match(slow.text, /搜索超时/)
+  const controller = new AbortController()
+  const cancelled = runWebSearch({ ...config, timeoutSec: 30 }, prompt, { signal: controller.signal, fetchImpl: waitForAbort })
+  controller.abort()
+  assert.match((await cancelled).text, /已取消/)
+})
+test('web search: answers only count as different when the final answers differ', async () => {
+  const { extractComparableAnswer, answersDisagree, buildSearchContextBlock } = await import('../src/services/webSearch')
+  const reply = (answer: string, thought = '先分析一下…') => `${thought}\n{"answer": "${answer}"}`
+  assert.equal(extractComparableAnswer(reply('B. 传动角')), '传动角')
+  assert.equal(extractComparableAnswer('```json\n{"answer":"Meeting."}\n```'), 'meeting')
+  assert.equal(extractComparableAnswer('思考\n最终：正确'), '最终正确')
+  assert.equal(answersDisagree([reply('传动角', '理由甲'), reply('B. 传动角', '理由乙完全不同')]), false)
+  assert.equal(answersDisagree([reply('传动角'), reply('压力角')]), true)
+  assert.equal(answersDisagree([reply('传动角')]), false)
+  assert.equal(answersDisagree(['', reply('传动角')]), false)
+  assert.equal(answersDisagree([]), false)
+  assert.match(buildSearchContextBlock('[1] x'), /最终答案里不要出现链接和来源[\s\S]*\[1\] x$/)
 })

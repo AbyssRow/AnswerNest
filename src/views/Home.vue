@@ -513,6 +513,16 @@
 
 <script setup lang="ts">
 import { providerClientOptions } from '../services/providerTransport'
+import {
+  WEB_SEARCH_PROVIDERS,
+  answersDisagree,
+  buildSearchContextBlock,
+  buildSearchQuery,
+  normalizeWebSearchConfig,
+  runWebSearch,
+  webSearchReady,
+  type WebSearchOutcome
+} from '../services/webSearch'
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { useSettings } from '../services/settings'
 import { useModelConfig } from '../services/modelConfig'
@@ -2058,9 +2068,7 @@ const callModelWithStreaming = async (
   requestId: string,
   onChunk?: (content: string) => void,
   onReasoning?: (text: string) => void,
-  media?: { images?: string[]; attachImages?: boolean; fileText?: string },
-  // 仅总结阶段传 webSearch: true：这时才给请求加上联网搜索参数，普通答题永远不联网
-  options?: { webSearch?: boolean }
+  media?: { images?: string[]; attachImages?: boolean; fileText?: string }
 ) => {
   if (isRequestCancelled(requestId)) {
     throw createCancelledRequestError()
@@ -2130,8 +2138,7 @@ const callModelWithStreaming = async (
     apiKey: platform.apiKey,
     baseUrl: platform.baseUrl,
     model: runtimeModelId,
-    modelId: runtimeModelId,
-    searchEnabled: options?.webSearch === true
+    modelId: runtimeModelId
   }
 
   // 读取超时配置（秒转毫秒）
@@ -2792,6 +2799,52 @@ const callModelAPI = async (requestId: string, query: string) => {
       fileText
     }
 
+    // 联网搜索：只在有总结模型、不是图片题、题目有文字时做；一次请求只搜一次，结果写进总结提示词。
+    // 默认和答题模型同时开始；开了「只在答案不一致时搜索」就等答题结束再决定。
+    const searchConfig = normalizeWebSearchConfig(settings.webSearch)
+    const searchWanted = webSearchReady(searchConfig)
+      && !hasImages
+      && globalSelectedSummaryModels.value.some(model => normalizeApiProtocol(model.apiProtocol) !== 'decision')
+      && !!buildSearchQuery(query, searchConfig)
+    const searchName = WEB_SEARCH_PROVIDERS.find(p => p.id === searchConfig.provider)?.name || '联网搜索'
+    const searchKey = 'search:' + searchConfig.provider
+    const upsertSearchEntry = (patch: Partial<MultiModelResponse>) => {
+      const log = requestLogs.value.find(l => l.id === requestId)
+      if (!log) return
+      if (!log.multiModelResponses) log.multiModelResponses = []
+      const existing = log.multiModelResponses.find(r => r.modelId === searchKey)
+      if (existing) {
+        Object.assign(existing, patch)
+      } else {
+        log.multiModelResponses.push({
+          modelId: searchKey,
+          modelName: '搜索: ' + searchName,
+          platformName: searchName,
+          response: '',
+          streamingReasoning: '',
+          reasoningContent: '',
+          isLoading: true,
+          ...patch
+        })
+      }
+    }
+    const startSearch = (): Promise<WebSearchOutcome | null> => {
+      upsertSearchEntry({ isLoading: true, response: '正在联网搜索…' })
+      return runWebSearch(searchConfig, query).then(outcome => {
+        if (isRequestCancelled(requestId)) return null
+        upsertSearchEntry({
+          isLoading: false,
+          response: outcome.ok
+            ? `搜索词：${outcome.query}\n耗时：${(outcome.tookMs / 1000).toFixed(1)} 秒\n\n${outcome.text}`
+            : outcome.text
+        })
+        if (!outcome.ok) console.warn('[联网搜索失败]', outcome.text)
+        return outcome
+      })
+    }
+    let searchPromise: Promise<WebSearchOutcome | null> | null =
+      searchWanted && !searchConfig.onlyWhenDisagree ? startSearch() : null
+
     // 并发调用答题模型。纯文本全答；带图片只答开了视觉的。
     const results: { model: AIModel; response: string; success: boolean }[] = []
     const modelPromises = selectedModels.map(async (model) => {
@@ -2912,12 +2965,26 @@ const callModelAPI = async (requestId: string, query: string) => {
         })
       }
 
+      // 联网搜索资料：搜索失败只是没有这段资料，不影响总结
+      let searchSection = ''
+      if (searchWanted) {
+        if (!searchPromise && searchConfig.onlyWhenDisagree) {
+          if (answersDisagree(successfulResults)) searchPromise = startSearch()
+          else upsertSearchEntry({ isLoading: false, response: '已跳过：各模型的答案一致，不需要搜索' })
+        }
+        if (searchPromise) {
+          const searchOutcome = await searchPromise
+          if (isRequestCancelled(requestId)) return
+          if (searchOutcome?.ok) searchSection = buildSearchContextBlock(searchOutcome.text) + '\n\n'
+        }
+      }
+
       const summaryQuery = `你是一个总结专家。下面是用户的问题以及AI模型的回答。请根据回答内容，整理并总结出一个最准确、最全面的最终答案。
 
 用户原始问题：
 ${query}
 
-模型回答内容：
+${searchSection}模型回答内容：
 ${baseCombinedResponse}
 
 请直接给出最终总结答案：`
@@ -2946,9 +3013,7 @@ ${baseCombinedResponse}
                   requestId,
                   (content) => updateMultiModelStreamingResponse(requestId, summaryKey, stripMarkdownCodeBlock(content)),
                   (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning),
-                  answerMedia,
-                  // 模型上开了「总结时联网搜索」才在总结阶段联网
-                  { webSearch: model.webSearch === true }
+                  answerMedia
                 )
               },
               (attempt, maxAttempts) => {

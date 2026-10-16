@@ -3,8 +3,7 @@ import type { AIModel } from './modelConfig'
 /** Self-contained: embedded into the existing user-visible protocol templates. */
 export function applyModelRequestOptions(
   payload: Record<string, any>,
-  // searchEnabled 是调用方（总结阶段）临时打开的；模型上保存的 webSearch 只是「允许」，不能直接当作每次请求都联网
-  config: Partial<AIModel> & { baseUrl?: string; searchEnabled?: boolean },
+  config: Partial<AIModel> & { baseUrl?: string },
   kind: 'chat' | 'responses' | 'anthropic',
   thinking: { enable: boolean; effort: string; offResponsesEffort: string }
 ): void {
@@ -92,21 +91,6 @@ export function applyModelRequestOptions(
       else if (/^gemini-2\.5-flash/.test(payload.model)) payload.reasoning_effort = 'none'
     }
     if (upstream === 'openrouter') payload.reasoning = thinking.enable ? { effort: effort === 'max' ? 'high' : effort } : { enabled: false }
-    // 联网搜索：OpenRouter 的 web 插件由服务端搜索并把结果并入回答。模型名已带 :online 时它自己就会搜，不重复加。
-    if (upstream === 'openrouter' && config.searchEnabled === true && !/:online$/i.test(String(payload.model || ''))) {
-      const plugins = Array.isArray(payload.plugins) ? payload.plugins : []
-      if (!plugins.some((plugin: any) => plugin && plugin.id === 'web')) {
-        payload.plugins = [
-          ...plugins,
-          {
-            id: 'web',
-            max_results: 5,
-            // 默认的搜索提示会要求模型把来源写成链接；这里只拿搜索结果核对答案，最终答案里不要链接和来源
-            search_prompt: '以下是联网搜索到的参考资料，只用来核对答案是否正确。最终答案里不要出现链接、引用编号或来源说明。',
-          },
-        ]
-      }
-    }
     if (upstream === 'groq') {
       if (thinking.enable && /gpt-oss/.test(payload.model)) payload.reasoning_effort = effort === 'max' ? 'high' : effort
       if (payload.temperature === 0) payload.temperature = 1e-8

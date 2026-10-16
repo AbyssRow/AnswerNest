@@ -158,17 +158,6 @@
               <p class="form-hint">开启后，这个模型可以回答带图片的题，也可以被选为总结模型。</p>
             </div>
 
-            <div v-if="supportsWebSearch" class="form-group">
-              <label class="form-label form-label--row">
-                <span>总结时联网搜索</span>
-                <label class="switch-toggle" :class="{ disabled: isRemote }">
-                  <input type="checkbox" v-model="formData.webSearch" :disabled="isRemote" />
-                  <span class="switch-slider"></span>
-                </label>
-              </label>
-              <p class="form-hint">只在这个模型被选为<strong>总结模型</strong>时生效：总结前先联网搜索这道题的资料，再结合各模型的回答整理最终答案；普通答题不会联网。搜索由 OpenRouter 完成，会增加耗时，并按 OpenRouter 的规则另外计费。</p>
-            </div>
-
             <div class="form-group">
               <label class="form-label form-label--row">
                 <span>启用思考</span>
@@ -302,7 +291,7 @@ import * as acorn from 'acorn'
 import { type AIModel, type ThinkingEffort, type ThinkingOffResponsesEffort } from '../../../services/modelConfig'
 import { buildPresetProcessModelJsCode, normalizeApiProtocol, readModelIdFromJsCode } from '../../../services/modelProtocol'
 import { useExclusiveMenu } from '../../../composables/useExclusiveMenu'
-import { defaultProtocolForPlatform, providerForPlatform, upstreamSupportsWebSearch } from '../../../services/providerRegistry'
+import { defaultProtocolForPlatform, providerForPlatform } from '../../../services/providerRegistry'
 import ModelAdvancedOptions from './ModelAdvancedOptions.vue'
 import { createProviderFetch, providerEndpoint, providerHeaders } from '../../../services/providerTransport'
 import type { AIPlatform } from '../../../services/modelConfig'
@@ -378,7 +367,6 @@ const formData = ref({
   thinkingEffort: 'medium' as ThinkingEffort,
   thinkingMode: 'auto' as NonNullable<AIModel['thinkingMode']>,
   thinkingBudget: '',
-  webSearch: false,
   apiProtocol: 'openai-chat' as AIModel['apiProtocol']
 })
 
@@ -399,16 +387,6 @@ const showThinkingEffort = computed(() => !(isMessagesProtocol.value && formData
 // 其他提供商不显示，避免一堆用不上的输入框。
 const BUDGET_UPSTREAMS = ['qwen', 'siliconflow']
 const platformProvider = computed(() => props.platform ? providerForPlatform(props.platform) : undefined)
-// 联网搜索靠请求参数完成：目前只有 OpenRouter（Chat 协议）。其他提供商不显示这个开关。
-const supportsWebSearch = computed(() => {
-  if (!isChatProtocol.value || formData.value.apiProtocol === 'custom') return false
-  // 和请求时的判断保持一致：模型上明确选了方言就用它；否则看平台的提供商；自定义提供商（方言「自动」）按地址识别，
-  // 这样用「自定义提供商」添加的 openrouter.ai 也能看到开关
-  let hostUpstream: string | undefined
-  try { hostUpstream = new URL(props.platform?.baseUrl || props.platformBaseUrl || '').hostname === 'openrouter.ai' ? 'openrouter' : undefined } catch { hostUpstream = undefined }
-  const saved = props.model?.upstream && props.model.upstream !== 'auto' ? props.model.upstream : undefined
-  return upstreamSupportsWebSearch(saved ?? platformProvider.value?.upstream ?? hostUpstream)
-})
 const showThinkingBudget = computed(() => {
   if (isMessagesProtocol.value) return formData.value.thinkingMode !== 'adaptive'
   if (!isChatProtocol.value) return false
@@ -817,7 +795,6 @@ const createDialogFormData = (model?: AIModel | null) => {
     thinkingEffort,
     thinkingMode,
     thinkingBudget,
-    webSearch: model?.webSearch === true,
     apiProtocol: protocol
   }
 }
@@ -1217,7 +1194,6 @@ const handleSubmit = () => {
     thinkingEffort: formData.value.thinkingEffort,
     thinkingMode: formData.value.thinkingMode,
     thinkingBudget,
-    webSearch: supportsWebSearch.value && formData.value.webSearch,
     apiProtocol: formData.value.apiProtocol
   }
 

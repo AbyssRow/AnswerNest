@@ -1,5 +1,6 @@
 import { reactive, watch } from 'vue'
 import { environmentDetector } from './environmentDetector'
+import { DEFAULT_WEB_SEARCH_CONFIG, normalizeWebSearchConfig, type WebSearchConfig } from './webSearch'
 
 // 设置接口定义
 export interface AppSettings {
@@ -16,6 +17,8 @@ export interface AppSettings {
   modelResponseTimeout: number
   // 模型失败自动重试次数（仅单模型 / 总结模型 / 视觉模型）；0 表示不重试
   modelRetryCount: number
+  // 总结时联网搜索（Firecrawl / Exa）
+  webSearch: WebSearchConfig
 
   
   // 题目显示设置
@@ -75,6 +78,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoAddToQuestionBank: true,
   modelResponseTimeout: 40,
   modelRetryCount: 2,
+  webSearch: { ...DEFAULT_WEB_SEARCH_CONFIG },
 
   defaultDifficulty: 'medium',
   itemsPerPage: 20,
@@ -132,7 +136,7 @@ class SettingsManager {
       if (stored) {
         const parsedSettings = { ...(JSON.parse(stored) || {}) }
         delete parsedSettings.enableNonThinkingModelAnalysis
-        return { ...DEFAULT_SETTINGS, ...parsedSettings, network: { ...DEFAULT_SETTINGS.network, ...(parsedSettings.network || {}) } }
+        return { ...DEFAULT_SETTINGS, ...parsedSettings, network: { ...DEFAULT_SETTINGS.network, ...(parsedSettings.network || {}) }, webSearch: normalizeWebSearchConfig(parsedSettings.webSearch) }
       }
 
 
@@ -153,7 +157,7 @@ class SettingsManager {
       if (content) {
         const parsed = { ...(JSON.parse(content) || {}) }
         delete parsed.enableNonThinkingModelAnalysis
-        Object.assign(this.settings, { ...DEFAULT_SETTINGS, ...parsed, network: { ...DEFAULT_SETTINGS.network, ...(parsed.network || {}) } })
+        Object.assign(this.settings, { ...DEFAULT_SETTINGS, ...parsed, network: { ...DEFAULT_SETTINGS.network, ...(parsed.network || {}) }, webSearch: normalizeWebSearchConfig(parsed.webSearch) })
         console.log('已从配置文件加载设置')
       }
 
@@ -346,6 +350,7 @@ class SettingsManager {
       autoAddToQuestionBank: '自动将AI返回的题目添加到本地题库',
       modelResponseTimeout: '文本模型最长响应时间（秒）',
       modelRetryCount: '模型失败自动重试次数',
+      webSearch: '总结时联网搜索（Firecrawl / Exa）',
 
       network: '网络配置设置',
       windowSize: '窗口大小',

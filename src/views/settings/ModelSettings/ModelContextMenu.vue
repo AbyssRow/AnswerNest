@@ -28,7 +28,7 @@ const props = defineProps<Props>()
 
 const emit = defineEmits<{
   'edit-model': []
-  'test-model': [{ testFunctionCalling: boolean }]
+  'test-model': [{ testFunctionCalling: boolean; textOnly?: boolean }]
   'batch-model': []
   'delete-model': []
   close: []
@@ -57,6 +57,18 @@ const menuItems = computed<MenuItem[]>(() => {
   const isVision = props.model?.supportsVision === true || props.model?.category === 'vision'
 
   if (isVision) {
+    items.push({
+      id: 'test-model-text',
+      label: '测试模型（文本）',
+      action: 'test-model-text',
+      icon: {
+        type: 'svg',
+        paths: [
+          { d: 'M9 12l2 2 4-4' },
+          { d: 'M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9z' }
+        ]
+      }
+    })
     items.push({
       id: 'test-model-vision',
       label: '测试视觉能力',
@@ -139,6 +151,9 @@ const handleItemClick = (item: MenuItem) => {
       break
     case 'test-model':
       emit('test-model', { testFunctionCalling: false })
+      break
+    case 'test-model-text':
+      emit('test-model', { testFunctionCalling: false, textOnly: true })
       break
     case 'test-model-vision':
       emit('test-model', { testFunctionCalling: false })

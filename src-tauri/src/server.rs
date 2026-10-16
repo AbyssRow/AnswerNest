@@ -88,6 +88,19 @@ fn check_admin_token(auth: &Option<String>) -> bool {
     !admin_token.is_empty() && token == admin_token
 }
 
+/// 没有任何题目内容（题目为空白、也没有图片）。
+/// OCS 检测题库是否可用时会先 HEAD 题库地址，失败后再发一个不带任何参数的 GET：
+/// 这种请求不是真正的题目，不能转给 AI，更不能把结果存进题库。
+fn is_blank_question(title: &str, images: &[String]) -> bool {
+    title.trim().is_empty() && images.iter().all(|image| image.trim().is_empty())
+}
+
+/// OCS 的「题库连接状态」探测：HEAD /query?t=...，只要返回 2xx/3xx 就算可用。
+/// 不记录日志、不查库、不调用模型。
+fn query_head_route() -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path("query").and(warp::head()).map(warp::reply)
+}
+
 /// 按字符数（而非字节数）截断，避免在多字节字符（如中文）中间切开导致 panic
 fn truncate_chars(text: &str, max_chars: usize) -> &str {
     match text.char_indices().nth(max_chars) {
@@ -783,6 +796,12 @@ pub async fn start_server(
             let logger = logger_for_query.clone();
             let app = app_for_query.clone();
             async move {
+                // 空白请求（例如探测）不记录日志，也不请求 AI
+                if is_blank_question(&request.title, &request.images) {
+                    return Ok::<_, warp::Rejection>(warp::reply::json(&QueryResponse::error(
+                        "题目内容为空".to_string(),
+                    )));
+                }
                 let start_time = std::time::Instant::now();
                 let request_body = request_body_for_log(&request);
                 
@@ -889,6 +908,12 @@ pub async fn start_server(
                 
                 // 从查询参数构建 QueryRequest
                 let title = params.get("title").cloned().unwrap_or_default();
+                // 空白请求（例如 OCS 的连接探测回退成不带参数的 GET）不记录日志，也不请求 AI
+                if is_blank_question(&title, &[]) {
+                    return Ok::<_, warp::Rejection>(warp::reply::json(&QueryResponse::error(
+                        "题目内容为空".to_string(),
+                    )));
+                }
                 let options = params.get("options").cloned();
                 let query_type = params.get("type").cloned();
                 
@@ -989,7 +1014,7 @@ pub async fn start_server(
         });
 
     // 合并 GET 和 POST 路由
-    let query_route = query_post_route.or(query_get_route);
+    let query_route = query_head_route().or(query_post_route).or(query_get_route);
 
     let mark_pending_correction_route = warp::path("api")
         .and(warp::path("questions"))
@@ -1791,6 +1816,29 @@ mod same_question_tests {
 
 
     /// OCS 网课助手 5.2.1 按我们给出的题库配置实际发送/接收的数据格式
+    #[test]
+    fn blank_questions_are_not_real_queries() {
+        use super::is_blank_question;
+        assert!(is_blank_question("", &[]));
+        assert!(is_blank_question("  \n\t ", &[]));
+        assert!(is_blank_question("", &["   ".to_string()]));
+        assert!(!is_blank_question("1+1=?", &[]));
+        // 只有图片的题（标题为空）仍然是真题
+        assert!(!is_blank_question("", &["data:image/png;base64,AAAA".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn ocs_head_probe_on_query_is_answered_locally() {
+        use super::query_head_route;
+        let route = query_head_route();
+        // OCS 5.2.1 探测：HEAD <题库地址>?t=<时间戳>
+        let res = warp::test::request().method("HEAD").path("/query?t=1792157850068").reply(&route).await;
+        assert_eq!(res.status(), 200);
+        // 只处理 HEAD，不会吞掉真正的查询
+        let post = warp::test::request().method("POST").path("/query").reply(&route).await;
+        assert_ne!(post.status(), 200);
+    }
+
     #[test]
     fn ocs_wire_format_matches_ocs_5_2_1() {
         use crate::types::{QueryData, QueryRequest, QueryResponse};

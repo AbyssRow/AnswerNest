@@ -1036,8 +1036,12 @@ const handleEditModel = () => {
   hideModelMenu()
 }
 
-const handleTestModel = async (payload?: { testFunctionCalling: boolean }) => {
+// 视觉模型默认走图片测试；用户选「测试模型（文本）」时只发文字。重新测试时沿用同一种
+const testTextOnly = ref(false)
+
+const handleTestModel = async (payload?: { testFunctionCalling: boolean; textOnly?: boolean }) => {
   if (contextMenuModel.value) {
+    testTextOnly.value = payload?.textOnly === true
     modelToTest.value = contextMenuModel.value
     testDialogModelName.value = contextMenuModel.value.name
     showTestDialog.value = true
@@ -1048,14 +1052,14 @@ const handleTestModel = async (payload?: { testFunctionCalling: boolean }) => {
     streamingReasoning.value = ''
     // 延迟执行以确保弹窗打开后再触发自动测试
     await nextTick()
-    testModel(contextMenuModel.value, payload?.testFunctionCalling ?? false)
+    testModel(contextMenuModel.value, payload?.testFunctionCalling ?? false, testTextOnly.value)
   }
   hideModelMenu()
 }
 
 const handleStartTest = async ({ testFunctionCalling }: { testFunctionCalling: boolean }) => {
   if (modelToTest.value) {
-    await testModel(modelToTest.value, testFunctionCalling)
+    await testModel(modelToTest.value, testFunctionCalling, testTextOnly.value)
   }
 }
 
@@ -1339,7 +1343,7 @@ const addModel = async (platformId: string, model: AIModel) => {
 }
 
 // 测试模型功能
-const testModel = async (model: AIModel, testFunctionCalling: boolean = false) => {
+const testModel = async (model: AIModel, testFunctionCalling: boolean = false, textOnly: boolean = false) => {
   if (!selectedPlatform.value) return
   if (model.apiProtocol === 'decision') {
     testingModelId.value = model.id
@@ -1382,7 +1386,7 @@ const testModel = async (model: AIModel, testFunctionCalling: boolean = false) =
     // 根据模型类型构建不同的测试输入数据
     let testInput: any
     
-    if (modelSupportsVision(model) && !testFunctionCalling) {
+    if (modelSupportsVision(model) && !testFunctionCalling && !textOnly) {
       // 视觉模型测试：使用图片输入
       // 将图片转换为base64格式
       let imageBase64 = ''

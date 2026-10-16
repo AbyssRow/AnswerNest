@@ -7,6 +7,8 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'auto'
   language: 'zh-CN' | 'en-US'
   autoSave: boolean
+  // 关闭主窗口时：true 隐藏到系统托盘（服务继续运行），false 直接退出
+  closeToTray: boolean
   
   // 题库设置
   autoAddToQuestionBank: boolean
@@ -69,6 +71,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'light',
   language: 'zh-CN',
   autoSave: true,
+  closeToTray: true,
   autoAddToQuestionBank: true,
   modelResponseTimeout: 40,
   modelRetryCount: 2,
@@ -339,6 +342,7 @@ class SettingsManager {
       theme: '界面主题模式',
       language: '应用界面语言',
       autoSave: '自动保存设置',
+      closeToTray: '关闭窗口时最小化到系统托盘',
       autoAddToQuestionBank: '自动将AI返回的题目添加到本地题库',
       modelResponseTimeout: '文本模型最长响应时间（秒）',
       modelRetryCount: '模型失败自动重试次数',

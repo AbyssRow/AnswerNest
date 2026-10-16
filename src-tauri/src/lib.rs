@@ -213,9 +213,12 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default()
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if window.label() == "main" {
-                    // 直接关闭，不隐藏到系统托盘
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // 只处理主窗口；开启「关闭时最小化到托盘」时只隐藏窗口，服务继续运行，
+                // 从托盘图标（左键 / 右键菜单「显示窗口」）可以重新打开，「退出」才真正退出
+                if window.label() == "main" && crate::server::close_to_tray_enabled() {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
             }
         })
@@ -415,6 +418,7 @@ pub fn run() {
                 .build()?;
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
+                .tooltip("AnswerNest")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

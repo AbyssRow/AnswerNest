@@ -11,6 +11,16 @@
         <ThemeSwitch v-model="localSettings.theme" @update:modelValue="handleThemeChange" />
       </div>
     </div>
+    <div class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">关闭窗口时最小化到托盘</h3>
+        <p class="setting-description">开启后，点关闭按钮只会隐藏窗口，题库服务继续在后台运行；从托盘图标可以重新打开或退出。关闭则点关闭按钮直接退出程序。</p>
+      </div>
+      <div class="setting-control">
+        <Toggle v-model="settings.closeToTray" variant="default" size="medium"
+          @change="handleSettingChange('closeToTray', $event)" />
+      </div>
+    </div>
     </div>
 
     <div class="network-group">

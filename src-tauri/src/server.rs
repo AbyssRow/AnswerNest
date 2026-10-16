@@ -33,6 +33,16 @@ fn read_app_config() -> serde_json::Value {
         .unwrap_or_default()
 }
 
+/// 关闭主窗口时是隐藏到系统托盘（true，默认）还是直接退出（false）。
+/// 服务要在后台持续给 OCS 答题，所以默认保留；用户可在「常规设置」里改。
+fn close_to_tray_from_config(config: &serde_json::Value) -> bool {
+    config.get("closeToTray").and_then(|v| v.as_bool()).unwrap_or(true)
+}
+
+pub(crate) fn close_to_tray_enabled() -> bool {
+    close_to_tray_from_config(&read_app_config())
+}
+
 /// 是否将 AI 回答写入本地题库（读取 config.json 的 autoAddToQuestionBank）
 fn should_auto_add_to_question_bank() -> bool {
     read_app_config()
@@ -1816,6 +1826,16 @@ mod same_question_tests {
 
 
     /// OCS 网课助手 5.2.1 按我们给出的题库配置实际发送/接收的数据格式
+    #[test]
+    fn close_to_tray_defaults_to_on_and_follows_the_setting() {
+        use super::close_to_tray_from_config;
+        assert!(close_to_tray_from_config(&serde_json::json!({})));
+        assert!(close_to_tray_from_config(&serde_json::json!({"closeToTray": true})));
+        assert!(!close_to_tray_from_config(&serde_json::json!({"closeToTray": false})));
+        // 值不合法时按默认处理，不要因为配置损坏就让窗口关不掉或退不出
+        assert!(close_to_tray_from_config(&serde_json::json!({"closeToTray": "no"})));
+    }
+
     #[test]
     fn blank_questions_are_not_real_queries() {
         use super::is_blank_question;

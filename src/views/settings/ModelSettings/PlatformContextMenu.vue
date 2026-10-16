@@ -31,14 +31,11 @@ const emit = defineEmits<{
 }>()
 
 const menuItems = computed<MenuItem[]>(() => {
-  const isRemote = !!props.platform?.isRemote
-
   return [
     {
       id: 'edit-platform',
       label: '编辑平台',
       action: 'edit-platform',
-      // 远程平台允许编辑（配置 API Key / 基础 URL 等），与远程模型可编辑保持一致
       icon: {
         type: 'svg',
         paths: [
@@ -52,7 +49,6 @@ const menuItems = computed<MenuItem[]>(() => {
       id: 'delete-platform',
       label: '删除平台',
       action: 'delete-platform',
-      disabled: isRemote,
       danger: true,
       icon: {
         type: 'svg',

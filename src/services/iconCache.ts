@@ -1,7 +1,5 @@
 const REMOTE_ICON_CACHE_PREFIX = 'remote_icon_cache_v1:'
 const REMOTE_ICON_CACHE_TTL = 7 * 24 * 60 * 60 * 1000
-const PROD_PLATFORM_ICON_BASE_URL = 'https://webapi.zaizhexue.top/providers/'
-const DEV_PLATFORM_ICON_BASE_URL = 'https://webapi.zaizhexue.top/providers/'
 
 const memoryIconCache = new Map<string, string>()
 const pendingIconRequests = new Map<string, Promise<string>>()
@@ -13,26 +11,10 @@ interface RemoteIconCacheEntry {
 
 const isRemoteIconUrl = (icon?: string): boolean => !!icon && /^https?:\/\//i.test(icon)
 
-const getPlatformIconBaseUrl = (): string => import.meta.env.DEV ? DEV_PLATFORM_ICON_BASE_URL : PROD_PLATFORM_ICON_BASE_URL
-
-const normalizePlatformIconPath = (icon: string): string => icon
-  .trim()
-  .replace(/^\/+/, '')
-  .replace(/^assets\/images\/providers\//i, '')
-  .replace(/^providers\//i, '')
-
-const getPlatformAssetIconUrl = (icon: string): string => {
-  if (!icon || !icon.includes('.')) return ''
-  const normalizedIcon = normalizePlatformIconPath(icon)
-  if (!normalizedIcon) return ''
-  return new URL(normalizedIcon, getPlatformIconBaseUrl()).toString()
-}
-
-
+// 相对路径的图标名（如 openai.svg）曾经指向原作者的服务器；现在没有默认图标源，解析为空，界面回退到首字母头像
 const getResolvableIconUrl = (icon?: string): string => {
   if (!icon) return ''
   if (isRemoteIconUrl(icon)) return icon
-  if (icon.includes('.')) return getPlatformAssetIconUrl(icon)
   return ''
 }
 

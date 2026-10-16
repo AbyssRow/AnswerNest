@@ -292,7 +292,7 @@ const handleNetworkChange = () => {
 }
 
 const openLanAccessDocs = async () => {
-  const url = 'https://docs.zerror.cc/docs/local/LAN'
+  const url = 'https://github.com/AbyssRow/AnswerNest#局域网访问'
   if (environmentDetector.isTauriEnvironment) {
     try {
       const { openUrl } = await import('@tauri-apps/plugin-opener')

@@ -23,8 +23,6 @@ export class InitializationService {
     try {
       console.log('开始应用初始化...');
 
-      await modelConfigManager.syncRemotePlatforms();
-
       // 数据库初始化已移至后端 (Rust) 在启动时自动完成
 
       this.isInitialized = true;

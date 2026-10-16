@@ -11,12 +11,6 @@
       "identifier": "opener:default",
       "allow": [
         {
-          "url": "https://app.zerror.cc/**"
-        },
-        {
-          "url": "https://webapi.zaizhexue.top/**"
-        },
-        {
           "url": "http://localhost:8081/**"
         },
         {

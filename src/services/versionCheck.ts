@@ -23,12 +23,12 @@ export interface VersionInfo {
 }
 
 export class VersionCheckService {
-  private static readonly API_URL = 'https://webapi.zaizhexue.top/live/latest_version.json';
   // 构建时从 src-tauri/tauri.conf.json 注入，发布时只需改那里（和 Cargo.toml）
   private static readonly CURRENT_VERSION = __APP_VERSION__;
 
+  // 自动更新已停用：没有配置任何更新服务器，这里不会产生网络请求。
   private static getApiUrls(): string[] {
-    return [VersionCheckService.API_URL];
+    return [];
   }
 
   /**

@@ -107,42 +107,6 @@
     </div>
 
     <div class="network-group">
-      <div class="group-title">网站和社区</div>
-
-      <div class="setting-item">
-        <div class="setting-info">
-          <div class="setting-title-row">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <h3 class="setting-title">上游官网</h3>
-          </div>
-          <p class="setting-description">访问上游项目 ZError 的官方网站（本软件基于 ZError 修改）</p>
-        </div>
-        <div class="setting-control">
-          <a href="https://app.zerror.cc" target="_blank" class="plain-link">app.zerror.cc</a>
-        </div>
-      </div>
-
-      <div class="setting-item">
-        <div class="setting-info">
-          <div class="setting-title-row">
-            <svg width="16" height="16" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-              <path d="M630.125714 1001.033143l-78.774857-153.088H262.144l-24.868571 158.866286-155.794286-22.966858 21.284571-135.899428H0V694.857143h126.683429l59.830857-382.756572H0V159.012571h210.432L235.300571 0l155.794286 22.966857-21.284571 135.972572h389.705143L783.945143 0l155.794286 22.966857-20.918858 136.045714H1024v153.088h-128.731429L836.461714 694.857143H1024v153.088h-211.017143L785.92 1024l-155.794286-22.966857z m105.837715-689.005714H345.965714L285.988571 694.857143h265.289143l104.96 135.899428 79.725715-518.656z" fill="currentColor"/>
-            </svg>
-            <h3 class="setting-title">上游 QQ 频道</h3>
-          </div>
-          <p class="setting-description">上游项目 ZError 的 QQ 频道，可交流使用经验</p>
-        </div>
-        <div class="setting-control">
-          <a href="https://pd.qq.com/s/b0vebzqkc" target="_blank" class="plain-link">pd.qq.com/s/b0vebzqkc</a>
-        </div>
-      </div>
-
-    </div>
-
-    <div class="network-group">
       <div class="group-title">开源</div>
 
       <div class="setting-item">

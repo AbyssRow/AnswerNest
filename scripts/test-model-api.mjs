@@ -10,7 +10,7 @@ await build({
     emptyOutDir: true,
     minify: 'esbuild',
     lib: { entry: 'tests/model-api.test.ts', formats: ['es'], fileName: () => 'model-api.test.mjs' },
-    rollupOptions: { external: ['node:assert/strict', 'node:test'] },
+    rollupOptions: { external: ['node:assert/strict', 'node:test', 'node:fs', 'node:path'] },
   },
 })
 const result = spawnSync(process.execPath, ['--test', 'tmp/model-api-tests/model-api.test.mjs'], { stdio: 'inherit' })

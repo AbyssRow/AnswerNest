@@ -25,7 +25,7 @@
           <div class="step-tooltip">
             <strong>步骤 1：配置 AI 模型</strong><br>
             前往"设置 &gt; 模型设置"，选择一个 AI 平台并填写您的 API Key。<br>
-            <a data-v-f7451f5a="" href="https://docs.zerror.cc/get-apiKey" target="_blank" rel="noopener noreferrer" class="api-doc-link">如何获取Api Key?</a><br><br>
+            <br>
             <strong>必须完成：</strong><br>
             • 在填写 API Key 的平台下，至少选择<strong>一个文本模型</strong>。<br>
             • （可选）还可以选择一个视觉和总结模型。
@@ -56,22 +56,6 @@
           </div>
         </div>
       </div>
-      <button
-        v-if="props.activeTab === 'questions'"
-        class="campus-entry"
-        type="button"
-        title="打开校园题库"
-        @click="openCampusBank"
-      >
-        <svg t="1774676033971" class="campus-entry-icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="13992" aria-hidden="true">
-          <path d="M711.64369225 373.38084187m-146.83947615 0a146.83947615 146.83947615 0 1 0 293.67895229 0 146.83947615 146.83947615 0 1 0-293.67895229 0Z" fill="#FED16C" p-id="13993"></path>
-          <path d="M952.5443192 863.53186765H470.7301199c-34.3829365 0-62.25434548-27.87140898-62.25434548-62.25434548v-95.0449999c0-69.4260875 56.27357867-125.69966617 125.69966617-125.69966617h354.89766716c69.4260875 0 125.69966617 56.27357867 125.69966617 125.69966617v95.0449999c0.02589076 34.3829365-27.84551822 62.25434548-62.22845472 62.25434548z" fill="#FED16C" p-id="13994"></path>
-          <path d="M392.26815525 295.72149097m-185.01540977 0a185.01540978 185.01540978 0 1 0 370.03081955 0 185.01540978 185.01540978 0 1 0-370.03081955 0Z" fill="#F9A214" p-id="13995"></path>
-          <path d="M676.21217975 913.30686419H108.32413076c-54.13759052 0-98.02243792-43.88484741-98.02243793-98.02243792v-80.89569658c0-98.11305561 79.53643141-177.66243239 177.66243241-177.66243241h408.63395081c98.11305561 0 177.66243239 79.53643141 177.6624324 177.66243241v80.89569658c-0.01294539 54.12464514-43.8977928 98.02243792-98.0483287 98.02243792z" fill="#F9A214" p-id="13996"></path>
-          <path d="M392.28110064 381.12218075c-42.991616 0-81.49118419-22.21427675-102.9805195-59.45814283-8.18148187-14.14930331-3.32696336-32.24694835 10.82233995-40.40253945 14.09752178-8.20737264 32.24694835-3.35285413 40.40253944 10.82233995 10.82233995 18.70607803 30.16274173 29.86499792 51.75564011 29.86499793 21.59289837 0 40.93330015-11.1589199 51.71680395-29.86499793 8.20737264-14.17519408 26.26618153-18.97793106 40.42843023-10.84823072 14.14930331 8.18148187 19.00382183 26.27912691 10.84823071 40.42843022-21.50228069 37.21797531-59.9889035 59.45814282-102.96757412 59.45814283h-0.02589077z" fill="#FFFFFF" p-id="13997"></path>
-        </svg>
-        <span class="campus-entry-text">想将题库分享给同学？试试校园题库吧</span>
-      </button>
     </div>
 
     <div class="header-right" :class="{ 'header-right--macos': isMacOS }">
@@ -321,23 +305,6 @@ const closeWindow = async () => {
   }
 }
 
-const openCampusBank = async () => {
-  const url = 'https://tiku.zerror.cc/campus'
-
-  try {
-    if (isTauri.value) {
-      const { openUrl } = await import('@tauri-apps/plugin-opener')
-      await openUrl(url)
-      return
-    }
-
-    window.open(url, '_blank', 'noopener,noreferrer')
-  } catch (error) {
-    console.error('打开校园题库失败:', error)
-    window.open(url, '_blank', 'noopener,noreferrer')
-  }
-}
-
 // 检测是否在Tauri环境中运行
 const checkTauriEnvironment = () => {
   console.log('Checking Tauri environment...')
@@ -451,55 +418,6 @@ onMounted(async () => {
   align-items: center;
   min-width: 0;
   pointer-events: none;
-}
-
-.campus-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: min(100%, 420px);
-  padding: 2px 8px;
-  border: none;
-  outline: none;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-primary, #2d3748);
-  cursor: pointer;
-  transition: color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
-  -webkit-app-region: no-drag;
-  pointer-events: auto;
-}
-
-.campus-entry:hover {
-  color: color-mix(in srgb, var(--text-primary, #2d3748) 75%, #f9a214);
-}
-
-.campus-entry:active {
-  transform: translateY(1px);
-}
-
-.campus-entry:focus-visible {
-  border-radius: 999px;
-  box-shadow: 0 0 0 2px color-mix(in srgb, #f9a214 45%, transparent);
-}
-
-.campus-entry-icon {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  filter: drop-shadow(0 0 4px rgba(249, 162, 20, 0.55)) drop-shadow(0 0 10px rgba(254, 209, 108, 0.35));
-}
-
-.campus-entry:hover .campus-entry-icon {
-  filter: drop-shadow(0 0 6px rgba(249, 162, 20, 0.7)) drop-shadow(0 0 14px rgba(254, 209, 108, 0.45));
-}
-
-.campus-entry-text {
-  font-size: 12px;
-  line-height: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .header-right {
@@ -678,15 +596,6 @@ onMounted(async () => {
 }
 
 @media (max-width: 900px) {
-  .campus-entry {
-    max-width: 280px;
-    padding-left: 10px;
-    padding-right: 10px;
-  }
-
-  .campus-entry-text {
-    font-size: 11px;
-  }
 }
 
 /* Tutorial Stepper Styles */

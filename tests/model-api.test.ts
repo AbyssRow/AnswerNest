@@ -5,6 +5,9 @@ import { providerEndpoint, providerHeaders, providerClientOptions, validateProxy
 import { BatchApi, batchRowsFromPrompts, parseBatchJsonl } from '../src/services/batchApi'
 import { collectModelOptions } from '../src/services/modelOptionsForm'
 import { providers, batchSpecForPlatform, defaultProtocolForPlatform, providerForPlatform } from '../src/services/providerRegistry'
+import { adoptRemotePlatforms } from '../src/services/remoteCatalogMigration'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { batchStatusLabel, canDownloadResults, endpointForModel } from '../src/services/batchUi'
 
 const platform: any = { id: 'p1', baseUrl: 'https://api.openai.com/v1', apiKey: 'test-key', models: [] }
@@ -360,6 +363,62 @@ test('GPT-6 is a reasoning family: no sampling params, max passes through, think
   assert.equal(resp.temperature, undefined)
   const off = (await execute('openai-response', { modelId: 'gpt-6.1-sol', enableThinking: false, upstream: 'compatible' })).request.body
   assert.equal(off.reasoning, undefined)
+})
+test('legacy remote platforms become ordinary local ones; unconfigured ones are dropped; promo fields and stale icons are stripped', () => {
+  const model = (id: string, extra: any = {}) => ({ id, platformId: 'x', name: id, displayName: id, maxTokens: 1, temperature: 0, topP: 1, enabled: true, category: 'text', ...extra })
+  const input: any[] = [
+    // never configured: no key, only catalog models -> removed
+    { id: 'p_unused', name: 'Unused', displayName: 'Unused', baseUrl: 'https://a/v1', apiKey: '', enabled: true, isRemote: true, inviteCode: 'ABC', models: [model('m1', { isRemote: true })] },
+    // has a key: kept, unlocked, promo stripped, catalog icon reference dropped, models unlocked
+    { id: 'p_keyed', name: 'Keyed', displayName: 'Keyed', baseUrl: 'https://b/v1', apiKey: 'sk-1', enabled: true, isRemote: true, icon: 'openai.svg', inviteUrl: 'https://x', inviteText: '邀请', inviteCode: 'ABC', models: [model('m2', { isRemote: true, icon: 'gpt.svg' })] },
+    // no key but the user added a model of their own: kept
+    { id: 'p_own', name: 'Own', displayName: 'Own', baseUrl: 'https://c/v1', apiKey: '', enabled: true, isRemote: true, models: [model('m3', { isRemote: true }), model('m4', { isRemote: false })] },
+    // user-created platform: untouched (emoji icon kept)
+    { id: 'custom_1', name: 'Mine', displayName: 'Mine', baseUrl: 'https://d/v1', apiKey: '', enabled: true, icon: '🤖', models: [] },
+    // user-created platform with a stale catalog icon name: only the icon reference goes
+    { id: 'custom_2', name: 'Mine2', displayName: 'Mine2', baseUrl: 'https://e/v1', apiKey: '', enabled: true, icon: 'deepseek.svg', models: [] },
+  ]
+  const result = adoptRemotePlatforms(input)
+  assert.equal(result.changed, true)
+  assert.deepEqual(result.removedPlatformIds, ['p_unused'])
+  assert.deepEqual(result.platforms.map(p => p.id), ['p_keyed', 'p_own', 'custom_1', 'custom_2'])
+  const keyed: any = result.platforms[0]
+  assert.equal(keyed.isRemote, false)
+  assert.equal(keyed.apiKey, 'sk-1')
+  assert.equal(keyed.icon, undefined)
+  for (const field of ['inviteUrl', 'inviteText', 'inviteCode']) assert.equal(keyed[field], undefined, field)
+  assert.equal(keyed.models[0].isRemote, false)
+  assert.equal(keyed.models[0].icon, undefined)
+  assert.deepEqual(result.platforms[1].models.map(m => m.isRemote), [false, false])
+  assert.equal(result.platforms[2].icon, '🤖')
+  assert.equal(result.platforms[3].icon, undefined)
+  // idempotent: running again changes nothing
+  const again = adoptRemotePlatforms(result.platforms)
+  assert.equal(again.changed, false)
+  assert.deepEqual(again.removedPlatformIds, [])
+  // user-provided http(s)/data icons survive
+  const kept = adoptRemotePlatforms([{ id: 'custom_3', name: 'K', displayName: 'K', baseUrl: 'https://f/v1', apiKey: '', enabled: true, icon: 'https://example.com/i.png', models: [] } as any])
+  assert.equal(kept.changed, false)
+})
+test('no address belonging to the original author is left in the app, config or docs', () => {
+  // 测试从仓库根目录运行（npm run test:model-api）；打包后的测试文件在 tmp/ 下，不能用 import.meta.url 推算根目录
+  const root = process.cwd()
+  const forbidden = /zerror\.cc|zaizhexue|pd\.qq\.com|picui\.cn/i
+  const targets = ['src', 'src-tauri/src', 'src-tauri/capabilities', 'src-tauri/tauri.conf.json', 'index.html', 'README.md', 'docs']
+  const found: string[] = []
+  let scanned = 0
+  const walk = (rel: string) => {
+    const full = join(root, rel)
+    if (!existsSync(full)) return
+    if (statSync(full).isDirectory()) { for (const name of readdirSync(full)) walk(join(rel, name)); return }
+    if (!/\.(ts|vue|rs|html|json|md|css|js|mjs|toml)$/i.test(rel)) return
+    scanned++
+    if (forbidden.test(readFileSync(full, 'utf8'))) found.push(rel)
+  }
+  targets.forEach(walk)
+  // 防止因为路径不对、什么都没扫就“通过”
+  assert.ok(scanned > 50, `只扫描了 ${scanned} 个文件，路径可能不对`)
+  assert.deepEqual(found, [])
 })
 test('third-party OpenAI-compatible relays get each model\'s official parameters, whatever the host', async () => {
   const relay = { baseUrl: 'https://relay.example.com/v1' }

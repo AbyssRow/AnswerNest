@@ -1,5 +1,4 @@
 import { shallowRef } from 'vue'
-import { fetchRemoteModelsCatalog } from '../services/modelConfig'
 
 export interface QuestionImagePart {
   type: 'text' | 'image'
@@ -249,137 +248,8 @@ const questionImageAlgorithmRuntime: QuestionImageAlgorithmRuntime = {
   fallbackSplitQuestionImageParts,
 }
 
-const REMOTE_QUESTION_IMAGE_ALGORITHM_RETRY_COOLDOWN_MS = 30 * 1000
-
-const activeQuestionImageAlgorithm = shallowRef<QuestionImageAlgorithm>(localQuestionImageAlgorithm)
-const activeQuestionImageAlgorithmMeta = shallowRef<QuestionImageAlgorithmMeta>({
-  source: 'local',
-  code: localQuestionImageAlgorithmCode,
-})
-const questionImageAlgorithmVersion = shallowRef(0)
-let pendingRemoteQuestionImageAlgorithmRequest: Promise<void> | null = null
-let remoteQuestionImageAlgorithmLoaded = false
-let remoteQuestionImageAlgorithmLastAttemptAt = 0
-let loggedQuestionImageAlgorithmSignature = ''
-
-const logActiveQuestionImageAlgorithm = () => {
-  const meta = activeQuestionImageAlgorithmMeta.value
-  const signature = `${questionImageAlgorithmVersion.value}:${meta.source}:${meta.code}`
-  if (signature === loggedQuestionImageAlgorithmSignature) return
-
-  loggedQuestionImageAlgorithmSignature = signature
-  console.info('[questionImage] 当前使用算法:', meta.source, '\n', meta.code)
-}
-
-const normalizeCompiledQuestionImageAlgorithm = (candidate: unknown): QuestionImageAlgorithm | null => {
-  if (!candidate || typeof candidate !== 'object') return null
-
-  const record = candidate as Record<string, unknown>
-  if (typeof record.findQuestionImageMatches !== 'function') {
-    return null
-  }
-
-  const findQuestionImageMatches = record.findQuestionImageMatches as (text: string, runtime: QuestionImageAlgorithmRuntime) => QuestionImageMatch[]
-  const extractQuestionImageUrls = typeof record.extractQuestionImageUrls === 'function'
-    ? record.extractQuestionImageUrls as (text: string, runtime: QuestionImageAlgorithmRuntime) => string[]
-    : null
-  const splitQuestionImageParts = typeof record.splitQuestionImageParts === 'function'
-    ? record.splitQuestionImageParts as (text: string, runtime: QuestionImageAlgorithmRuntime) => QuestionImagePart[]
-    : null
-
-  try {
-    const previewText = '题目 https://example.com/demo.png) 结束'
-    const previewMatches = normalizeQuestionImageMatches(
-      findQuestionImageMatches(previewText, questionImageAlgorithmRuntime),
-      previewText,
-    )
-    if (!previewMatches.length) return null
-
-    return {
-      findQuestionImageMatches: (text: string, runtime: QuestionImageAlgorithmRuntime) => normalizeQuestionImageMatches(
-        findQuestionImageMatches(String(text || ''), runtime),
-        String(text || ''),
-      ),
-      extractQuestionImageUrls: extractQuestionImageUrls
-        ? (text: string, runtime: QuestionImageAlgorithmRuntime) => normalizeQuestionImageUrls(
-            extractQuestionImageUrls(String(text || ''), runtime),
-          )
-        : undefined,
-      splitQuestionImageParts: splitQuestionImageParts
-        ? (text: string, runtime: QuestionImageAlgorithmRuntime) => normalizeQuestionImageParts(
-            splitQuestionImageParts(String(text || ''), runtime),
-            String(text || ''),
-          )
-        : undefined,
-    }
-  } catch {
-    return null
-  }
-}
-
-const compileQuestionImageAlgorithm = (code: string): QuestionImageAlgorithm | null => {
-  const trimmedCode = code.trim().replace(/^export\s+default\s+/, '')
-  if (!trimmedCode) return null
-
-  try {
-    const executableCode = /^(\{|\()/.test(trimmedCode)
-      ? `module.exports = (${trimmedCode});`
-      : trimmedCode
-
-    const resolved = new Function('module', 'exports', 'runtime', `
-      "use strict";
-      ${executableCode}
-      return typeof createQuestionImageAlgorithm === 'function'
-        ? createQuestionImageAlgorithm(runtime)
-        : (module.exports.default ?? module.exports);
-    `)({ exports: {} }, {}, questionImageAlgorithmRuntime)
-
-    return normalizeCompiledQuestionImageAlgorithm(resolved)
-  } catch (error) {
-    console.warn('编译云控图片链接算法失败，继续使用本地算法:', error)
-    return null
-  }
-}
-
-const ensureRemoteQuestionImageAlgorithm = () => {
-  if (remoteQuestionImageAlgorithmLoaded) return Promise.resolve()
-  if (pendingRemoteQuestionImageAlgorithmRequest) return pendingRemoteQuestionImageAlgorithmRequest
-
-  const now = Date.now()
-  if (now - remoteQuestionImageAlgorithmLastAttemptAt < REMOTE_QUESTION_IMAGE_ALGORITHM_RETRY_COOLDOWN_MS) {
-    return Promise.resolve()
-  }
-  remoteQuestionImageAlgorithmLastAttemptAt = now
-
-  pendingRemoteQuestionImageAlgorithmRequest = fetchRemoteModelsCatalog()
-    .then((catalog) => {
-      remoteQuestionImageAlgorithmLoaded = true
-      const compiledAlgorithm = catalog.questionImageAlgorithm
-        ? compileQuestionImageAlgorithm(catalog.questionImageAlgorithm)
-        : null
-
-      if (!compiledAlgorithm) return
-      activeQuestionImageAlgorithm.value = compiledAlgorithm
-      activeQuestionImageAlgorithmMeta.value = {
-        source: 'remote',
-        code: catalog.questionImageAlgorithm || '',
-      }
-      questionImageAlgorithmVersion.value += 1
-    })
-    .catch(() => undefined)
-    .finally(() => {
-      pendingRemoteQuestionImageAlgorithmRequest = null
-    })
-
-  return pendingRemoteQuestionImageAlgorithmRequest
-}
-
-const getQuestionImageAlgorithm = (): QuestionImageAlgorithm => {
-  void questionImageAlgorithmVersion.value
-  void ensureRemoteQuestionImageAlgorithm()
-  logActiveQuestionImageAlgorithm()
-  return activeQuestionImageAlgorithm.value
-}
+// 图片链接算法只使用本地实现。不会从任何服务器下载代码再执行。
+const getQuestionImageAlgorithm = (): QuestionImageAlgorithm => localQuestionImageAlgorithm
 
 const findQuestionImageMatchesByAlgorithm = (text: string, algorithm: QuestionImageAlgorithm): QuestionImageMatch[] => {
   const sourceText = String(text || '')
@@ -387,7 +257,7 @@ const findQuestionImageMatchesByAlgorithm = (text: string, algorithm: QuestionIm
   try {
     return algorithm.findQuestionImageMatches(sourceText, questionImageAlgorithmRuntime)
   } catch (error) {
-    console.warn('执行云控图片匹配算法失败，回退到默认匹配逻辑:', error)
+    console.warn('执行图片匹配算法失败，回退到默认匹配逻辑:', error)
     return fallbackFindQuestionImageMatches(sourceText)
   }
 }
@@ -400,7 +270,7 @@ const extractQuestionImageUrlsByAlgorithm = (text: string, algorithm: QuestionIm
       const urls = normalizeQuestionImageUrls(algorithm.extractQuestionImageUrls(sourceText, questionImageAlgorithmRuntime))
       if (urls.length) return urls
     } catch (error) {
-      console.warn('执行云控图片 URL 提取算法失败，回退到默认提取逻辑:', error)
+      console.warn('执行图片 URL 提取算法失败，回退到默认提取逻辑:', error)
     }
   }
 
@@ -415,7 +285,7 @@ const splitQuestionImagePartsByAlgorithm = (text: string, algorithm: QuestionIma
       const parts = normalizeQuestionImageParts(algorithm.splitQuestionImageParts(sourceText, questionImageAlgorithmRuntime), sourceText)
       if (parts.length) return parts
     } catch (error) {
-      console.warn('执行云控图片分段算法失败，回退到默认分段逻辑:', error)
+      console.warn('执行图片分段算法失败，回退到默认分段逻辑:', error)
     }
   }
 

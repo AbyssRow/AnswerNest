@@ -191,9 +191,9 @@
                 </button>
               </div>
             </div>
-            <div class="form-tip">
+            <div v-if="selectedKeyUrl" class="form-tip">
               <a 
-                href="https://docs.zerror.cc/get-apiKey" 
+                :href="selectedKeyUrl" 
                 target="_blank" 
                 rel="noopener noreferrer" 
                 class="api-doc-link"
@@ -371,8 +371,8 @@
 <script setup lang="ts">
 import { providerClientOptions } from '../../services/providerTransport'
 import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
-import { useModelConfig, fetchRemoteModelsCatalog } from '../../services/modelConfig'
-import type { AIPlatform, AIModel, RemoteModelIconMapping } from '../../services/modelConfig'
+import { useModelConfig } from '../../services/modelConfig'
+import type { AIPlatform, AIModel } from '../../services/modelConfig'
 import { resolveExecutableModelJsCode, resolveRuntimeModelId } from '../../services/modelProtocol'
 import { environmentDetector } from '../../services/environmentDetector'
 import { getPlatformIconDisplayUrl, resolvePlatformIconUrl } from '../../services/iconCache'
@@ -747,39 +747,8 @@ const deletePlatformId = ref('')
 const iconLoadErrors = ref<{[key: string]: boolean}>({})
 const platformIconUrls = ref<Record<string, string>>({})
 const platformIconBackgrounds = ref<Record<string, boolean>>({})
-const remoteModelIconMappings = ref<RemoteModelIconMapping[]>([])
-const PROD_REMOTE_MODEL_ICON_BASE_URL = 'https://webapi.zaizhexue.top/models/'
-const DEV_REMOTE_MODEL_ICON_BASE_URL = 'https://webapi.zaizhexue.top/models/'
-
-const getRemoteModelIconBaseUrl = (): string => {
-  const isTauriDev = import.meta.env.DEV && typeof window !== 'undefined' && (window.__TAURI__ || window.__TAURI_INTERNALS__)
-  return isTauriDev ? DEV_REMOTE_MODEL_ICON_BASE_URL : PROD_REMOTE_MODEL_ICON_BASE_URL
-}
-
-const resolveModelIconUrl = (icon?: string): string => {
-  if (!icon) return ''
-  if (/^data:/i.test(icon)) return icon
-  if (/^https?:\/\//i.test(icon)) return icon
-
-  const normalizedIcon = icon
-    .trim()
-    .replace(/^\/+/, '')
-    .replace(/^assets\/images\/models\//i, '')
-    .replace(/^models\//i, '')
-
-  if (!normalizedIcon) return ''
-  return new URL(normalizedIcon, getRemoteModelIconBaseUrl()).toString()
-}
-
-const loadRemoteModelIconMappings = async () => {
-  try {
-    const catalog = await fetchRemoteModelsCatalog()
-    remoteModelIconMappings.value = catalog.modelIconMappings || []
-  } catch (error) {
-    console.warn('加载远程模型图标映射失败:', error)
-    remoteModelIconMappings.value = []
-  }
-}
+// 模型图标只认用户自己设置的 data: 或 http(s) 地址，不再从任何服务器取默认图标
+const resolveModelIconUrl = (icon?: string): string => (icon && /^(data:|https?:\/\/)/i.test(icon) ? icon : '')
 
 // 预加载平台图标
 const loadPlatformIcons = async () => {
@@ -1013,18 +982,7 @@ const handleIconError = (platformId: string) => {
   platformIconBackgrounds.value[platformId] = false
 }
 
-const getModelIcon = (model: AIModel): string => {
-  if (model.icon) {
-    return resolveModelIconUrl(model.icon)
-  }
-
-  const searchStr = `${model.displayName || ''} ${model.name || ''}`.toLowerCase()
-  const matchedMapping = remoteModelIconMappings.value.find(mapping =>
-    mapping.models.some(keyword => searchStr.includes(keyword.toLowerCase()))
-  )
-
-  return resolveModelIconUrl(matchedMapping?.icon)
-}
+const getModelIcon = (model: AIModel): string => resolveModelIconUrl(model.icon)
 
 
 const showPlatformMenu = (event: MouseEvent, platform: AIPlatform) => {
@@ -1063,7 +1021,7 @@ const handleEditPlatform = () => {
 }
 
 const handleDeletePlatform = async () => {
-  if (contextMenuPlatform.value && !contextMenuPlatform.value.isRemote) {
+  if (contextMenuPlatform.value) {
     deletePlatformName.value = contextMenuPlatform.value.name
     deletePlatformId.value = contextMenuPlatform.value.id
     showDeletePlatformDialog.value = true
@@ -1305,8 +1263,11 @@ const cancelDeleteModel = () => {
   deleteModelId.value = ''
 }
 
+// 「如何获取 API Key」直接指向这个提供商自己的 Key 页面；没有已知页面就不显示
+const selectedKeyUrl = computed(() => (selectedPlatform.value ? providerForPlatform(selectedPlatform.value)?.keyUrl || '' : ''))
+
 const openModelConfigDocs = async () => {
-  const url = 'https://docs.zerror.cc/docs/local/modelConfig'
+  const url = 'https://github.com/AbyssRow/AnswerNest/blob/master/docs/model-providers.md'
   await openPlatformUrl(url)
 }
 
@@ -1799,7 +1760,6 @@ onMounted(() => {
   
   // 预加载平台图标
   loadPlatformIcons()
-  loadRemoteModelIconMappings()
 
   if (modelConfig.platforms.length > 0) {
     selectedPlatform.value = modelConfig.platforms[0]

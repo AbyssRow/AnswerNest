@@ -1,6 +1,7 @@
 import { reactive, watch, computed } from 'vue'
 import { normalizeApiProtocol } from './modelProtocol'
 import { inferSupportsVision, modelSupportsVision } from '../utils/questionAttachments'
+import { adoptRemotePlatforms } from './remoteCatalogMigration'
 
 // AI 平台配置接口
 export interface AIPlatform {
@@ -90,141 +91,8 @@ export interface ModelSettings {
   deletedPredefinedModels?: string[]
 }
 
-// 远程模型数据 URL（测试版 / 正式版统一）
-const PROD_REMOTE_MODELS_URL = 'https://webapi.zaizhexue.top/live/models.json'
-const TAURI_DEV_REMOTE_MODELS_URL = 'https://webapi.zaizhexue.top/live/models.json'
-const REMOTE_MODELS_REQUEST_COOLDOWN_MS = 30 * 1000
 const USER_CREATED_PLATFORM_ID_PREFIX = 'custom_'
 const LEGACY_USER_CREATED_MODEL_ID_PREFIX = 'model_'
-
-const getRemoteModelsUrls = (): string[] => {
-  return [TAURI_DEV_REMOTE_MODELS_URL, PROD_REMOTE_MODELS_URL].filter(
-    (url, index, arr) => arr.indexOf(url) === index
-  )
-}
-
-export interface RemoteModelIconMapping {
-  icon: string
-  models: string[]
-}
-
-export interface RemoteModelsCatalog {
-  providersList: string[]
-  modelIconMappings: RemoteModelIconMapping[]
-  platforms: AIPlatform[]
-  questionImageAlgorithm: string | null
-}
-
-
-const normalizeRemoteModelsCatalog = (json: unknown): RemoteModelsCatalog => {
-  const toStringList = (value: unknown): string[] => {
-    if (!Array.isArray(value)) return []
-    return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0))]
-  }
-
-  const normalizeModelIconMappings = (value: unknown): RemoteModelIconMapping[] => {
-    if (Array.isArray(value)) {
-      return value
-        .map((item) => {
-          if (!item || typeof item !== 'object') return null
-          const record = item as Record<string, unknown>
-          const icon = typeof record.icon === 'string' ? record.icon.trim() : ''
-          const models = toStringList(record.models ?? record.keywords ?? record.aliases)
-          if (!icon || !models.length) return null
-          return { icon, models }
-        })
-        .filter((item): item is RemoteModelIconMapping => item !== null)
-    }
-
-    if (value && typeof value === 'object') {
-      return Object.entries(value)
-        .map(([icon, modelsValue]) => {
-          const normalizedIcon = icon.trim()
-          const models = Array.isArray(modelsValue)
-            ? toStringList(modelsValue)
-            : typeof modelsValue === 'string'
-              ? [modelsValue.trim()].filter(Boolean)
-              : []
-
-          if (!normalizedIcon || !models.length) return null
-          return { icon: normalizedIcon, models }
-        })
-        .filter((item): item is RemoteModelIconMapping => item !== null)
-    }
-
-    return []
-  }
-
-  if (Array.isArray(json)) {
-    const platforms = json as AIPlatform[]
-    const fallbackProvidersList = toStringList(platforms.map(platform => platform.icon))
-    return {
-      providersList: fallbackProvidersList,
-      modelIconMappings: [],
-      platforms,
-      questionImageAlgorithm: null,
-    }
-  }
-
-  if (json && typeof json === 'object') {
-    const record = json as Record<string, unknown>
-    const platforms = Array.isArray(record.platforms) ? record.platforms as AIPlatform[] : []
-    const providersList = toStringList(record.providers_list)
-    const fallbackProvidersList = toStringList(platforms.map(platform => platform.icon))
-    const modelIconMappings = normalizeModelIconMappings(record.model_icon_mappings)
-    const questionImageAlgorithm = typeof record.question_image_algorithm === 'string'
-      ? record.question_image_algorithm.trim()
-      : typeof record.questionImageAlgorithm === 'string'
-        ? record.questionImageAlgorithm.trim()
-        : record.question_image && typeof record.question_image === 'object' && typeof (record.question_image as Record<string, unknown>).algorithm === 'string'
-          ? ((record.question_image as Record<string, unknown>).algorithm as string).trim()
-          : null
-
-    return {
-      providersList: providersList.length ? providersList : fallbackProvidersList,
-      modelIconMappings,
-      platforms,
-      questionImageAlgorithm: questionImageAlgorithm || null,
-    }
-  }
-
-  return {
-    providersList: [],
-    modelIconMappings: [],
-    platforms: [],
-    questionImageAlgorithm: null,
-  }
-}
-
-const dedupeRemotePlatforms = (platforms: AIPlatform[]): AIPlatform[] => {
-  const seenPlatformIds = new Set<string>()
-
-  return platforms.reduce<AIPlatform[]>((acc, platform) => {
-    if (!platform?.id || seenPlatformIds.has(platform.id)) {
-      return acc
-    }
-
-    seenPlatformIds.add(platform.id)
-
-    const seenModelIds = new Set<string>()
-    const models = (platform.models || []).reduce<AIModel[]>((modelAcc, model) => {
-      if (!model?.id || seenModelIds.has(model.id)) {
-        return modelAcc
-      }
-
-      seenModelIds.add(model.id)
-      modelAcc.push(model)
-      return modelAcc
-    }, [])
-
-    acc.push({
-      ...platform,
-      models,
-    })
-
-    return acc
-  }, [])
-}
 
 const isLikelyUserCreatedPlatform = (platform: Pick<AIPlatform, 'id'>): boolean => {
   return typeof platform.id === 'string' && platform.id.startsWith(USER_CREATED_PLATFORM_ID_PREFIX)
@@ -323,69 +191,7 @@ const sanitizeStoredPlatforms = (platforms: AIPlatform[]): AIPlatform[] => {
   })
 }
 
-let cachedRemoteModelsCatalog: RemoteModelsCatalog | null = null
-let cachedRemoteModelsCatalogAt = 0
-let pendingRemoteModelsCatalogRequest: Promise<RemoteModelsCatalog> | null = null
-
-const fetchRemoteModelsCatalogFromUrl = async (url: string): Promise<RemoteModelsCatalog> => {
-  try {
-    const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-    const r = await tauriFetch(url, { method: 'GET' })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    return normalizeRemoteModelsCatalog(await r.json())
-  } catch (tauriError) {
-    // 非 Tauri 或插件失败时回退到浏览器 fetch
-    try {
-      const r = await fetch(url)
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      return normalizeRemoteModelsCatalog(await r.json())
-    } catch (browserError) {
-      throw browserError instanceof Error ? browserError : tauriError
-    }
-  }
-}
-
-const requestRemoteModelsCatalog = async (): Promise<RemoteModelsCatalog> => {
-  const urls = getRemoteModelsUrls()
-  let lastError: unknown
-
-  for (const url of urls) {
-    try {
-      return await fetchRemoteModelsCatalogFromUrl(url)
-    } catch (error) {
-      lastError = error
-      console.warn(`加载远程模型目录失败 (${url}):`, error)
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('加载远程模型目录失败')
-}
-
-export const fetchRemoteModelsCatalog = async (): Promise<RemoteModelsCatalog> => {
-  const now = Date.now()
-
-  if (cachedRemoteModelsCatalog && now - cachedRemoteModelsCatalogAt < REMOTE_MODELS_REQUEST_COOLDOWN_MS) {
-    return cachedRemoteModelsCatalog
-  }
-
-  if (pendingRemoteModelsCatalogRequest) {
-    return pendingRemoteModelsCatalogRequest
-  }
-
-  pendingRemoteModelsCatalogRequest = requestRemoteModelsCatalog()
-    .then((catalog) => {
-      cachedRemoteModelsCatalog = catalog
-      cachedRemoteModelsCatalogAt = Date.now()
-      return catalog
-    })
-    .finally(() => {
-      pendingRemoteModelsCatalogRequest = null
-    })
-
-  return pendingRemoteModelsCatalogRequest
-}
-
-// 默认模型配置（无预定义平台，全部来自远程同步）
+// 默认模型配置（没有预置平台：用户在「添加平台」里选提供商，数据只存在本地）
 const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   selectedTextModel: null,
   selectedTextModels: [],
@@ -411,8 +217,6 @@ const MODEL_SETTINGS_STORAGE_KEY = 'model_settings'
 class ModelConfigManager {
   private settings: ModelSettings
   private listeners: Set<(settings: ModelSettings) => void> = new Set()
-  private remotePlatformsSyncAt = 0
-  private pendingRemotePlatformsSync: Promise<void> | null = null
   private shouldPersistLoadedSettings = false
   // localStorage 为空（全新安装，或更名/换 identifier 后 WebView 数据目录变了）时，
   // 尝试从 model_config.json 恢复。恢复完成前不能把空配置写回该文件，否则会覆盖唯一的副本。
@@ -454,9 +258,12 @@ class ModelConfigManager {
       ...loadedSettings,
       platforms: sanitizeStoredPlatforms(loadedSettings.platforms || []),
     }
+    // 早期版本同步下来的「远程平台」转成普通本地平台（见 remoteCatalogMigration.ts）
+    const adopted = adoptRemotePlatforms(sanitizedSettings.platforms)
+    sanitizedSettings.platforms = adopted.platforms
     return {
       settings: sanitizedSettings,
-      changed: JSON.stringify(loadedSettings) !== JSON.stringify(sanitizedSettings),
+      changed: adopted.changed || JSON.stringify(loadedSettings) !== JSON.stringify(sanitizedSettings),
     }
   }
 
@@ -597,238 +404,7 @@ class ModelConfigManager {
     }
   }
 
-  private sortPlatformsByRemoteOrder(platforms: AIPlatform[], remotePlatforms: AIPlatform[]): AIPlatform[] {
-    const remoteOrder = new Map(remotePlatforms.map((platform, index) => [platform.id, index]))
-
-    return [...platforms].sort((a, b) => {
-      const aIndex = remoteOrder.get(a.id)
-      const bIndex = remoteOrder.get(b.id)
-      const aIsRemote = aIndex !== undefined
-      const bIsRemote = bIndex !== undefined
-
-      if (aIsRemote && bIsRemote) return aIndex - bIndex
-      if (aIsRemote) return -1
-      if (bIsRemote) return 1
-      return 0
-    })
-  }
-
-  private sortModelsByRemoteOrder(models: AIModel[], remoteModels: AIModel[]): AIModel[] {
-    const remoteOrder = new Map(remoteModels.map((model, index) => [model.id, index]))
-
-    return [...models].sort((a, b) => {
-      const aIndex = remoteOrder.get(a.id)
-      const bIndex = remoteOrder.get(b.id)
-      const aIsRemote = aIndex !== undefined
-      const bIsRemote = bIndex !== undefined
-
-      if (aIsRemote && bIsRemote) return aIndex - bIndex
-      if (aIsRemote) return -1
-      if (bIsRemote) return 1
-      return 0
-    })
-  }
-
-  private findLocalPlatformWithSameRemoteModelId(remotePlatform: AIPlatform): AIPlatform | undefined {
-    const remoteModelIds = new Set((remotePlatform.models || []).map(model => model.id).filter(Boolean))
-    if (!remoteModelIds.size) return undefined
-
-    return this.settings.platforms
-      .filter(platform => !platform.isRemote && platform.apiKey?.trim())
-      .map(platform => ({
-        platform,
-        matchedModelCount: (platform.models || []).reduce(
-          (count, model) => count + (remoteModelIds.has(model.id) ? 1 : 0),
-          0
-        ),
-      }))
-      .filter(item => item.matchedModelCount > 0)
-      .sort((a, b) => b.matchedModelCount - a.matchedModelCount)[0]?.platform
-  }
-
-  /**
-   * 从远程同步平台和模型数据（每次启动时调用）
-   * - 远程平台/模型标记 isRemote: true，禁止编辑/删除
-   * - 保留用户的 apiKey、enabled 状态
-   * - 远程已删除的平台/模型：若其模型被选中，自动替换为同平台同类型的另一个模型
-   */
-  private async performRemotePlatformsSync(): Promise<boolean> {
-    let remotePlatforms: AIPlatform[] = []
-    try {
-      const catalog = await fetchRemoteModelsCatalog()
-      remotePlatforms = dedupeRemotePlatforms(catalog.platforms)
-    } catch (err) {
-      console.warn('远程模型同步失败，跳过同步:', err)
-      return false
-    }
-
-    const remotePlatformIds = new Set(remotePlatforms.map(p => p.id))
-    const existingPlatformsById = this.settings.platforms.reduce<Map<string, AIPlatform[]>>((map, platform) => {
-      const existingPlatforms = map.get(platform.id)
-      if (existingPlatforms) {
-        existingPlatforms.push(platform)
-      } else {
-        map.set(platform.id, [platform])
-      }
-      return map
-    }, new Map<string, AIPlatform[]>())
-
-    for (const localPlatform of this.settings.platforms) {
-      if (!localPlatform.isRemote) continue
-      if (remotePlatformIds.has(localPlatform.id)) continue
-
-      const userModels = localPlatform.models.filter(model => !model.isRemote && isLikelyUserCreatedModel(model, localPlatform.id))
-      if (userModels.length > 0) {
-        for (const model of localPlatform.models.filter(model => model.isRemote)) {
-          this._replaceSelectedModel(model.id, model.category, localPlatform.id)
-        }
-        localPlatform.isRemote = false
-        localPlatform.models = userModels
-      } else {
-        for (const model of localPlatform.models) {
-          this._replaceSelectedModel(model.id, model.category, localPlatform.id)
-        }
-      }
-    }
-
-    this.settings.platforms = this.settings.platforms.filter(
-      platform => !platform.isRemote && platform.name?.trim() && !remotePlatformIds.has(platform.id)
-    )
-
-    const newRemotePlatforms: AIPlatform[] = remotePlatforms.map(rp => {
-      const existingPlatforms = existingPlatformsById.get(rp.id) || []
-      const existing = existingPlatforms.find(platform => platform.isRemote)
-        ?? existingPlatforms.find(platform => platform.apiKey?.trim())
-        ?? existingPlatforms[0]
-      const preservedApiKey = getPlatformApiKey(existingPlatforms, existing)
-        || this.findLocalPlatformWithSameRemoteModelId(rp)?.apiKey
-        || ''
-
-      const remoteModels: AIModel[] = (rp.models || []).map(rm => {
-        // 自动检测思考模型：根据模型名称/ID 包含关键词时默认开启思考
-        const runtimeModelId = (rm.modelId || rm.id || '').toLowerCase()
-        const modelIdLower = (rm.id || '').toLowerCase()
-        const modelNameLower = (rm.name || '').toLowerCase() + (rm.displayName || '').toLowerCase()
-        const thinkingProbe = `${runtimeModelId} ${modelIdLower} ${modelNameLower}`
-        const isKnownThinkingModel =
-          thinkingProbe.includes('reasoner') ||
-          thinkingProbe.includes('-r1') ||
-          thinkingProbe.includes('thinking') ||
-          thinkingProbe.includes('deepseek-r1') ||
-          thinkingProbe.includes('deepseek r1') ||
-          runtimeModelId.startsWith('o1') ||
-          runtimeModelId.startsWith('o3') ||
-          modelIdLower.startsWith('o1') ||
-          modelIdLower.startsWith('o3')
-        // 保留用户已有的设置，否则按自动检测
-        const existingModel = existingPlatforms.flatMap(p => p.models || []).find(m => m.id === rm.id)
-        // 远程不再下发/使用 jsCode、pricing；调用只认 modelId（或 id）+ 协议预设
-        // 协议与思考配置由管理员锁定：每次同步强制采用远程值（缺省才回退 heuristic / 默认）
-        const { jsCode: _ignoredRemoteJsCode, pricing: _ignoredRemotePricing, ...remoteModelFields } = rm as AIModel & { pricing?: unknown }
-        const remoteProtocolRaw = normalizeApiProtocol(rm.apiProtocol)
-        const remoteProtocol = remoteProtocolRaw === 'custom' ? 'openai-chat' : remoteProtocolRaw
-        return {
-          ...remoteModelFields,
-          platformId: rp.id,
-          isRemote: true,
-          jsCode: undefined,
-          name: rm.name || existingModel?.name || rm.id,
-          displayName: rm.displayName || existingModel?.displayName || rm.name || rm.id,
-          modelId: rm.modelId?.trim() || rm.id,
-          apiProtocol: remoteProtocol,
-          // 图标由管理员在远程目录设置；未设则留空，客户端走 model_icon_mappings
-          icon: typeof rm.icon === 'string' && rm.icon.trim() ? rm.icon.trim() : undefined,
-          enabled: rm.enabled ?? true,
-          maxTokens: rm.maxTokens ?? 4096,
-          temperature: rm.temperature ?? 0.7,
-          topP: rm.topP ?? 0.9,
-          category: 'text',
-          supportsVision: typeof rm.supportsVision === 'boolean'
-            ? rm.supportsVision
-            : typeof existingModel?.supportsVision === 'boolean'
-              ? existingModel.supportsVision
-              : (rm.category === 'vision' || inferSupportsVision(rm)),
-          enableThinking: rm.enableThinking ?? isKnownThinkingModel,
-          thinkingOffEnableThinkingFalse: rm.thinkingOffEnableThinkingFalse ?? true,
-          thinkingOffThinkingTypeDisabled: rm.thinkingOffThinkingTypeDisabled ?? false,
-          thinkingOffResponsesEffort: rm.thinkingOffResponsesEffort
-            ?? (rm.thinkingOffEffortNone ? 'minimal' : 'minimal'),
-          thinkingEffort: rm.thinkingEffort ?? 'medium',
-        }
-      })
-      const localModels = dedupeModelsById(
-        existingPlatforms.flatMap(platform => (platform.models || [])
-          .filter(model => !model.isRemote && isLikelyUserCreatedModel(model, rp.id))
-          .map(model => ({
-            ...model,
-            platformId: rp.id,
-            isRemote: false,
-          })))
-      )
-      const models = this.sortModelsByRemoteOrder(dedupeModelsById([...remoteModels, ...localModels]), remoteModels)
-
-      if (existingPlatforms.length > 0) {
-        const remoteModelIds = new Set(remoteModels.map(m => m.id))
-        for (const oldModel of existingPlatforms.flatMap(platform => (platform.models || []).filter(model => model.isRemote))) {
-          if (!remoteModelIds.has(oldModel.id)) {
-            this._replaceSelectedModel(oldModel.id, oldModel.category, rp.id, models)
-          }
-        }
-      }
-
-      return {
-        id: rp.id,
-        name: rp.name || rp.displayName || rp.id,
-        displayName: rp.displayName || rp.name || rp.id,
-        baseUrl: rp.baseUrl || '',
-        description: rp.description,
-        icon: rp.icon,
-        url: rp.url,
-        inviteUrl: rp.inviteUrl,
-        inviteText: rp.inviteText,
-        inviteCode: rp.inviteCode || existing?.inviteCode,
-        isRemote: true,
-        apiKey: preservedApiKey,
-        enabled: existing?.enabled ?? true,
-        customHeaders: existing?.customHeaders,
-        proxyUrl: existing?.proxyUrl,
-        models,
-      }
-    })
-
-    this.settings.platforms = this.sortPlatformsByRemoteOrder(
-      [...newRemotePlatforms, ...this.settings.platforms],
-      remotePlatforms
-    )
-    this.normalizeSelectedModels()
-    return true
-  }
-
-  async syncRemotePlatforms(): Promise<void> {
-    const now = Date.now()
-
-    if (this.remotePlatformsSyncAt && now - this.remotePlatformsSyncAt < REMOTE_MODELS_REQUEST_COOLDOWN_MS) {
-      return
-    }
-
-    if (this.pendingRemotePlatformsSync) {
-      return this.pendingRemotePlatformsSync
-    }
-
-    this.pendingRemotePlatformsSync = this.performRemotePlatformsSync()
-      .then((didSync) => {
-        if (didSync) {
-          this.remotePlatformsSyncAt = Date.now()
-        }
-      })
-      .finally(() => {
-        this.pendingRemotePlatformsSync = null
-      })
-
-    return this.pendingRemotePlatformsSync
-  }
-
-  /**
+   /**
    * 当某个模型被删除/消失时，若它被选中，替换为同平台同类型的另一个可用模型
    */
   private _replaceSelectedModel(
@@ -1381,7 +957,6 @@ export function useModelConfig() {
     updateModel: modelConfigManager.updateModel.bind(modelConfigManager),
     removeModel: modelConfigManager.removeModel.bind(modelConfigManager),
     updateGlobalSettings: modelConfigManager.updateGlobalSettings.bind(modelConfigManager),
-    syncRemotePlatforms: modelConfigManager.syncRemotePlatforms.bind(modelConfigManager),
     
     // 工具方法
     export: modelConfigManager.export.bind(modelConfigManager),

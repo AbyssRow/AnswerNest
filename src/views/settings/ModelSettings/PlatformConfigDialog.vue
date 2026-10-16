@@ -59,7 +59,7 @@
                 {{ iconError }}
               </div>
               <div class="icon-picker">
-                <div class="icon-category">
+                <div v-if="availableIcons.length" class="icon-category">
                   <h5>预设图标</h5>
                   <div class="icon-grid">
                     <div 
@@ -180,7 +180,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, nextTick } from 'vue'
 import { providers, providerGroupLabels, customApiStyles, CUSTOM_PROVIDER_ID, providerForPlatform, type ProviderDef, type ApiStyle } from '../../../services/providerRegistry'
-import { fetchRemoteModelsCatalog, type AIPlatform } from '../../../services/modelConfig'
+import type { AIPlatform } from '../../../services/modelConfig'
 import { validateProxyUrl } from '../../../services/providerTransport'
 import { parseObject } from '../../../services/modelOptionsForm'
 import { getPlatformIconDisplayUrl, isImageIconValue, resolvePlatformIconUrl } from '../../../services/iconCache'
@@ -313,22 +313,10 @@ const primeIconUrlCache = async (icon?: string) => {
   }
 }
 
-// 获取可用图标列表
+// 没有预置图标目录（不再从服务器取）；可以选 emoji，或在别处填入自己的图标地址
 const loadAvailableIcons = async () => {
   iconError.value = ''
-
-  try {
-    const catalog = await fetchRemoteModelsCatalog()
-    availableIcons.value = catalog.providersList
-  } catch (error: any) {
-    console.warn('加载 providers_list 失败:', error)
-    availableIcons.value = []
-    iconError.value = error?.message || '图标列表加载失败'
-  }
-
-  for (const icon of availableIcons.value) {
-    iconUrls.value[icon] = getPlatformIconDisplayUrl(icon)
-  }
+  availableIcons.value = []
 }
 
 const resetForm = () => {

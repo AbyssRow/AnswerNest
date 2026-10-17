@@ -316,37 +316,14 @@ pub struct PaginatedAIResponses {
 }
 
 fn get_db_path() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let username = get_username().unwrap_or_else(|_| "Administrator".to_string());
-        format!(
-            "C:\\Users\\{}\\AppData\\Local\\AnswerNest\\airesponses.db",
-            username
-        )
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{}/.local/share/answernest/airesponses.db", home_dir)
-    }
+    crate::storage::data_dir().join("airesponses.db").to_string_lossy().into_owned()
 }
 
 /// 返回 (旧版 ZError 数据目录, 当前 AnswerNest 数据目录)
 fn data_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
-    #[cfg(target_os = "windows")]
-    {
-        let username = get_username().unwrap_or_else(|_| "Administrator".to_string());
-        let base = std::path::PathBuf::from(format!("C:\\Users\\{}\\AppData\\Local", username));
-        (base.join("ZError"), base.join("AnswerNest"))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home_dir = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let base = std::path::PathBuf::from(format!("{}/.local/share", home_dir));
-        (base.join("zerror"), base.join("answernest"))
-    }
+    let current = crate::storage::data_dir();
+    let legacy = current.with_file_name(if cfg!(windows) { "ZError" } else { "zerror" });
+    (legacy, current)
 }
 
 /// 从旧版 ZError 的数据目录迁移题库和设置到 AnswerNest。
@@ -955,13 +932,7 @@ fn get_target_folder_id(conn: &Connection, parent_folder_id: i64) -> Result<i64,
 }
 
 fn get_configured_save_folder_id(conn: &Connection) -> i64 {
-    let config_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("config.json");
-
-    let configured_folder_id = std::fs::read_to_string(&config_path)
+    let configured_folder_id = crate::storage::read_config_file("config.json")
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
         .and_then(|config| {

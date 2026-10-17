@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import { parseQuestionTable, type ImportedQuestion } from './questionTable';
 import { databaseService } from '../services/database';
 import mammoth from 'mammoth';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -10,23 +10,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-interface ImportedQuestion {
-    question: string;
-    options: string | null;
-    answer: string;
-    question_type: string;
-}
-
 export const parseSoftwareExportedFile = async (filePath: string): Promise<ImportedQuestion[]> => {
-    if (filePath.endsWith('.csv')) {
+    const extension = filePath.toLowerCase();
+    if (extension.endsWith('.csv')) {
         return await parseCSV(filePath);
-    } else if (filePath.endsWith('.xlsx')) {
+    } else if (extension.endsWith('.xlsx')) {
         return await parseXLSX(filePath);
-    } else if (filePath.endsWith('.docx')) {
+    } else if (extension.endsWith('.docx')) {
         return await parseDOCX(filePath);
-    } else if (filePath.endsWith('.txt')) {
+    } else if (extension.endsWith('.txt')) {
         return await parseTXT(filePath);
-    } else if (filePath.endsWith('.pdf')) {
+    } else if (extension.endsWith('.pdf')) {
         return await parsePDF(filePath);
     } else {
         throw new Error('不支持的文件格式');
@@ -311,37 +305,12 @@ const parsePDFByRegex = async (loadingTask: any): Promise<ImportedQuestion[]> =>
 
 const parseCSV = async (filePath: string): Promise<ImportedQuestion[]> => {
     const content = await readFile(filePath);
-    const text = new TextDecoder().decode(content);
-    const rows = text.split('\n').map(row => row.split(','));
-    // Assuming header is ID, 题目, 选项, 答案, 类型, 创建时间
-    // Skip header
-    const questions: ImportedQuestion[] = [];
-    for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        if (row.length < 5) continue;
-        questions.push({
-            question: row[1].replace(/^"|"$/g, '').replace(/""/g, '"'),
-            options: row[2].replace(/^"|"$/g, '').replace(/""/g, '"') || null,
-            answer: row[3].replace(/^"|"$/g, '').replace(/""/g, '"'),
-            question_type: row[4].replace(/^"|"$/g, '').replace(/""/g, '"'),
-        });
-    }
-    return questions;
+    return parseQuestionTable(new TextDecoder().decode(content));
 };
 
 const parseXLSX = async (filePath: string): Promise<ImportedQuestion[]> => {
     const content = await readFile(filePath);
-    const workbook = XLSX.read(content, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
-
-    return jsonData.map(row => ({
-        question: row['题目'] || '',
-        options: row['选项'] || null,
-        answer: row['答案'] || '',
-        question_type: row['类型'] || '',
-    }));
+    return parseQuestionTable(content);
 };
 
 const parseDOCX = async (filePath: string): Promise<ImportedQuestion[]> => {

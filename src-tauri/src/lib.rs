@@ -7,6 +7,7 @@ pub mod commands;
 pub mod database;
 pub mod logger;
 pub mod server;
+mod storage;
 pub mod types;
 pub mod window_size;
 
@@ -320,18 +321,16 @@ pub fn run() {
                         std::process::exit(0);
                     }
                 }
-                let username =
-                    crate::database::get_username().unwrap_or_else(|_| "Administrator".to_string());
                 crate::database::migrate_legacy_data();
-                let base_dir = format!("C:\\Users\\{}\\AppData\\Local\\AnswerNest", username);
-                let db_path = format!("{}\\airesponses.db", base_dir);
+                let base_dir = crate::storage::data_dir();
+                let db_path = base_dir.join("airesponses.db");
 
                 let mut need_elevation = false;
                 if let Err(e) = std::fs::create_dir_all(&base_dir) {
                     println!("⚠️ 创建数据目录失败: {}", e);
                     need_elevation = true;
                 } else {
-                    match crate::database::init_database_schema(&db_path) {
+                    match crate::database::init_database_schema(&db_path.to_string_lossy()) {
                         Ok(_) => {}
                         Err(e) => {
                             println!("⚠️ 初始化数据库失败: {}", e);
@@ -355,15 +354,14 @@ pub fn run() {
             // Linux/macOS database initialization
             #[cfg(not(target_os = "windows"))]
             {
-                let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                 crate::database::migrate_legacy_data();
-                let base_dir = format!("{}/.local/share/answernest", home_dir);
-                let db_path = format!("{}/airesponses.db", base_dir);
+                let base_dir = crate::storage::data_dir();
+                let db_path = base_dir.join("airesponses.db");
 
                 if let Err(e) = std::fs::create_dir_all(&base_dir) {
                     println!("⚠️ 创建数据目录失败: {}", e);
                 } else {
-                    if let Err(e) = crate::database::init_database_schema(&db_path) {
+                    if let Err(e) = crate::database::init_database_schema(&db_path.to_string_lossy()) {
                         println!("⚠️ 初始化数据库失败: {}", e);
                     }
                 }

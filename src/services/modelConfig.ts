@@ -210,6 +210,7 @@ const DEFAULT_MODEL_SETTINGS: ModelSettings = {
 
 // 模型配置存储键
 const MODEL_SETTINGS_STORAGE_KEY = 'model_settings'
+const freshModelDefaults = (): ModelSettings => JSON.parse(JSON.stringify(DEFAULT_MODEL_SETTINGS))
 
 /**
  * 模型配置管理器类
@@ -221,6 +222,8 @@ class ModelConfigManager {
   // localStorage 为空（全新安装，或更名/换 identifier 后 WebView 数据目录变了）时，
   // 尝试从 model_config.json 恢复。恢复完成前不能把空配置写回该文件，否则会覆盖唯一的副本。
   private restoringFromFile = false
+  private needsFileRestore = true
+  private pendingFileSave: Promise<void> = Promise.resolve()
 
   constructor() {
     this.settings = reactive(this.loadSettings())
@@ -229,7 +232,7 @@ class ModelConfigManager {
       this.saveSettings()
     }
     this.setupAutoSave()
-    if (this.localStorageWasEmpty()) {
+    if (this.needsFileRestore) {
       this.restoringFromFile = true
       void this.restoreFromFile().finally(() => {
         this.restoringFromFile = false
@@ -237,22 +240,18 @@ class ModelConfigManager {
     }
   }
 
-  private localStorageWasEmpty(): boolean {
-    try {
-      return localStorage.getItem(MODEL_SETTINGS_STORAGE_KEY) === null
-    } catch {
-      return false
-    }
-  }
-
   /**
    * 解析已保存的配置：过滤无名平台并清理旧字段。
    */
   private parseStoredSettings(parsedSettings: any): { settings: ModelSettings; changed: boolean } {
+    if (!parsedSettings || !Array.isArray(parsedSettings.platforms)) throw new Error('配置格式无效')
     const loadedSettings: ModelSettings = {
-      ...DEFAULT_MODEL_SETTINGS,
+      ...freshModelDefaults(),
       ...parsedSettings,
-      platforms: (parsedSettings.platforms || []).filter((p: AIPlatform) => p.name?.trim()),
+      globalSettings: { ...DEFAULT_MODEL_SETTINGS.globalSettings, ...parsedSettings.globalSettings },
+      platforms: parsedSettings.platforms.filter((p: AIPlatform) => typeof p?.name === 'string' && p.name.trim()),
+      selectedTextModels: Array.isArray(parsedSettings.selectedTextModels) ? parsedSettings.selectedTextModels : [],
+      selectedSummaryModels: Array.isArray(parsedSettings.selectedSummaryModels) ? parsedSettings.selectedSummaryModels : [],
     }
     const sanitizedSettings: ModelSettings = {
       ...loadedSettings,
@@ -268,7 +267,7 @@ class ModelConfigManager {
   }
 
   /**
-   * 从 exe 同级目录的 model_config.json 恢复模型配置（仅在 localStorage 为空时调用）
+   * 从用户数据目录的 model_config.json 恢复模型配置（localStorage 为空或损坏时调用）
    */
   private async restoreFromFile(): Promise<void> {
     try {
@@ -276,7 +275,7 @@ class ModelConfigManager {
       const content = await invoke<string>('read_model_config')
       if (!content?.trim()) return
       const parsed = JSON.parse(content)
-      if (!Array.isArray(parsed?.platforms) || parsed.platforms.length === 0) return
+      if (!Array.isArray(parsed?.platforms)) return
       const { settings } = this.parseStoredSettings(parsed)
       Object.assign(this.settings, settings)
       this.normalizeSelectedModels()
@@ -296,12 +295,13 @@ class ModelConfigManager {
       if (stored) {
         const { settings, changed } = this.parseStoredSettings(JSON.parse(stored))
         this.shouldPersistLoadedSettings = changed
+        this.needsFileRestore = false
         return settings
       }
     } catch (error) {
       console.warn('加载模型配置失败，使用默认配置:', error)
     }
-    return { ...DEFAULT_MODEL_SETTINGS }
+    return freshModelDefaults()
   }
 
   private dedupeAndFilterModelIds(modelIds: Array<string | null | undefined>, validIds: Set<string>, maxCount: number): string[] {
@@ -465,9 +465,13 @@ class ModelConfigManager {
    */
   private async saveToFile(): Promise<void> {
     if (this.restoringFromFile) return
+    const content = JSON.stringify(this.settings)
     try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('write_model_config', { content: JSON.stringify(this.settings) })
+      this.pendingFileSave = this.pendingFileSave.catch(() => {}).then(async () => {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('write_model_config', { content })
+      })
+      await this.pendingFileSave
     } catch {
       // 非 Tauri 环境忽略
     }
@@ -825,6 +829,7 @@ class ModelConfigManager {
           this.settings.selectedSummaryModels = []
           this.settings.selectedSummaryModel = null
         }
+        this.normalizeSelectedModels()
         break
       }
     }
@@ -841,6 +846,7 @@ class ModelConfigManager {
         // 替换选中状态（若被选中，自动切换到同平台同类型的另一个模型）
         this._replaceSelectedModel(modelId, model.category, platform.id)
         platform.models.splice(index, 1)
+        this.normalizeSelectedModels()
         break
       }
     }
@@ -857,7 +863,7 @@ class ModelConfigManager {
    * 重置配置
    */
   reset(): void {
-    Object.assign(this.settings, DEFAULT_MODEL_SETTINGS)
+    Object.assign(this.settings, freshModelDefaults())
   }
 
   /**
@@ -874,11 +880,7 @@ class ModelConfigManager {
     try {
       const importedSettings = JSON.parse(jsonString)
       if (this.validateSettings(importedSettings)) {
-        Object.assign(this.settings, {
-          ...DEFAULT_MODEL_SETTINGS,
-          ...importedSettings,
-          platforms: sanitizeStoredPlatforms(importedSettings.platforms || []),
-        })
+        Object.assign(this.settings, this.parseStoredSettings(importedSettings).settings)
         this.normalizeSelectedModels()
       } else {
         throw new Error('配置格式无效')
@@ -894,9 +896,10 @@ class ModelConfigManager {
    */
   private validateSettings(settings: any): boolean {
     return (
-      typeof settings === 'object' &&
+      settings !== null && typeof settings === 'object' &&
       Array.isArray(settings.platforms) &&
-      typeof settings.globalSettings === 'object'
+      settings.globalSettings !== null && typeof settings.globalSettings === 'object' &&
+      !Array.isArray(settings.globalSettings)
     )
   }
 

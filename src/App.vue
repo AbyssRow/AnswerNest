@@ -395,6 +395,7 @@ onUnmounted(() => {
         <!-- 题库页面 -->
         <div v-show="activeTab === 'questions'" class="content-view">
           <QuestionBank
+            :active="activeTab === 'questions'"
             :collapse-trigger="collapseTrigger"
             :focus-folder-id="questionBankFocusFolderId"
             :focus-folder-request-key="questionBankFocusRequestKey"

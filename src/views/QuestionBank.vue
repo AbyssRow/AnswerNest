@@ -7,6 +7,7 @@ import { useSettingsManager } from "../composables/useSettingsManager";
 
 // 接收来自顶层 App 的折叠触发器，用于在切换 tab 时收起题目详情
 const props = defineProps<{
+  active?: boolean;
   collapseTrigger?: number;
   focusFolderId?: number | null;
   focusFolderRequestKey?: number;
@@ -318,6 +319,10 @@ watch(() => selectedFolderId.value, () => {
 
 watch(() => props.collapseTrigger, () => {
   initCustomScrollbars();
+});
+
+watch(() => props.active, (active) => {
+  if (active) handleRefresh();
 });
 
 onMounted(() => {

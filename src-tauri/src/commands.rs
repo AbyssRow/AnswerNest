@@ -5,7 +5,6 @@ use crate::database::{
     clear_persisted_request_logs as db_clear_request_logs,
     file_exists as db_file_exists,
     get_username as db_get_username,
-    load_persisted_request_logs as db_load_request_logs,
 };
 use crate::logger::RequestLog;
 use crate::types::ServerState;
@@ -918,19 +917,10 @@ pub fn file_exists(path: String) -> bool {
 
 #[tauri::command]
 pub async fn get_request_logs(state: State<'_, ServerState>) -> Result<Vec<RequestLog>, String> {
-    match db_load_request_logs(Some(state.logger.max_logs())) {
-        Ok(logs) => Ok(logs),
-        Err(error) => {
-            println!("⚠️ 从SQLite读取请求日志失败，回退内存日志: {}", error);
-            let mut logs = state.logger.get_logs();
-            logs.reverse();
-            if logs.is_empty() {
-                Err(error)
-            } else {
-                Ok(logs)
-            }
-        }
-    }
+    // Request details are kept in memory; SQLite only records daily counts.
+    let mut logs = state.logger.get_logs();
+    logs.reverse();
+    Ok(logs)
 }
 
 #[tauri::command]
@@ -967,63 +957,28 @@ pub fn request_admin_elevation(app: tauri::AppHandle) -> Result<String, String> 
     }
 }
 
-/// 获取 exe 同级目录
-fn get_exe_dir() -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-}
-
-/// 获取配置文件路径（exe 同级目录下的 config.json）
-fn get_config_path() -> std::path::PathBuf {
-    get_exe_dir().join("config.json")
-}
-
 /// 读取配置文件
 #[tauri::command]
 pub fn read_config() -> Result<String, String> {
-    let path = get_config_path();
-    if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
-    } else {
-        Ok(String::new())
-    }
-}
-
-/// 先写临时文件再替换，避免写到一半崩溃/断电后配置文件被截断成无效 JSON
-fn write_file_atomic(path: &std::path::Path, content: &str) -> Result<(), String> {
-    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
-    tmp_name.push(".tmp");
-    let tmp_path = path.with_file_name(tmp_name);
-    std::fs::write(&tmp_path, content).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp_path, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        e.to_string()
-    })
+    crate::storage::read_config_file("config.json")
 }
 
 /// 写入配置文件
 #[tauri::command]
 pub fn write_config(content: String) -> Result<(), String> {
-    write_file_atomic(&get_config_path(), &content)
+    crate::storage::write_config_file("config.json", &content)
 }
 
 /// 读取模型配置文件
 #[tauri::command]
 pub fn read_model_config() -> Result<String, String> {
-    let path = get_exe_dir().join("model_config.json");
-    if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
-    } else {
-        Ok(String::new())
-    }
+    crate::storage::read_config_file("model_config.json")
 }
 
 /// 写入模型配置文件
 #[tauri::command]
 pub fn write_model_config(content: String) -> Result<(), String> {
-    write_file_atomic(&get_exe_dir().join("model_config.json"), &content)
+    crate::storage::write_config_file("model_config.json", &content)
 }
 
 #[tauri::command]

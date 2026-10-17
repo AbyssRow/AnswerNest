@@ -308,6 +308,7 @@ import { save, open } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { generateExportData, type ExportFormat } from '../../utils/exporter';
 import { parseSoftwareExportedFile } from '../../utils/importer';
+import { highlightText } from '../../utils/highlightText';
 import { splitQuestionImageParts, fetchQuestionImageBase64, shouldInvertTransparentDarkImage } from '../../utils/questionImage';
 import type { QuestionImagePart as Part } from '../../utils/questionImage';
 import { emit as tauriEmit } from '@tauri-apps/api/event';
@@ -747,7 +748,9 @@ const fetchQuestionPage = async (folderId?: string | null, page = 1) => {
   });
 };
 
+let questionRequestVersion = 0;
 const loadQuestions = async (folderId?: string | null, requestedPage = 1) => {
+  const requestVersion = ++questionRequestVersion;
   try {
     loading.value = true;
 
@@ -773,9 +776,12 @@ const loadQuestions = async (folderId?: string | null, requestedPage = 1) => {
 
       // 获取文件夹路径
       try {
-        folderPath.value = await databaseService.getFolderPath(folderIdNum);
+        const path = await databaseService.getFolderPath(folderIdNum);
+        if (requestVersion !== questionRequestVersion) return;
+        folderPath.value = path;
         console.log('获取文件夹路径:', folderPath.value);
       } catch (error) {
+        if (requestVersion !== questionRequestVersion) return;
         console.error('获取文件夹路径失败:', error);
         folderPath.value = [];
       }
@@ -785,6 +791,7 @@ const loadQuestions = async (folderId?: string | null, requestedPage = 1) => {
     }
 
     const result = await fetchQuestionPage(folderId, requestedPage);
+    if (requestVersion !== questionRequestVersion) return;
     const maxPage = Math.max(1, Math.ceil(result.total / pageSize.value));
 
     if (result.total > 0 && requestedPage > maxPage) {
@@ -798,12 +805,13 @@ const loadQuestions = async (folderId?: string | null, requestedPage = 1) => {
 
     console.log('题目加载成功:', { total: totalQuestions.value, currentPage: currentPage.value, pageSize: pageSize.value });
   } catch (error) {
+    if (requestVersion !== questionRequestVersion) return;
     console.error('加载题目失败:', error);
     questions.value = [];
     totalQuestions.value = 0;
     folderPath.value = [];
   } finally {
-    loading.value = false;
+    if (requestVersion === questionRequestVersion) loading.value = false;
   }
 };
 
@@ -1132,6 +1140,8 @@ watch(() => props.selectedFolderId, (newFolderId) => {
 
 // 搜索相关方法
 const handleSearch = () => {
+  // Invalidate in-flight results immediately, including during the debounce interval.
+  questionRequestVersion++;
   // 清除之前的防抖定时器
   if (searchDebounceTimer.value) {
     clearTimeout(searchDebounceTimer.value);
@@ -1149,6 +1159,9 @@ const performSearch = async () => {
     return;
   }
 
+  const requestVersion = ++questionRequestVersion;
+  const query = searchTerm.value.trim();
+  const folderId = props.selectedFolderId;
   try {
     loading.value = true;
     if (!isSearchMode.value) {
@@ -1159,35 +1172,38 @@ const performSearch = async () => {
 
     // 获取当前选中的文件夹ID
     const currentFolderId =
-      props.selectedFolderId && props.selectedFolderId !== PENDING_CORRECTION_FOLDER_ID
-        ? parseInt(props.selectedFolderId)
+      folderId && folderId !== PENDING_CORRECTION_FOLDER_ID
+        ? parseInt(folderId)
         : undefined;
 
     // 获取用于高亮的关键词（进行分词）
     try {
-      const segments = await invoke<string[]>('segment_text', { text: searchTerm.value.trim() });
+      const segments = await invoke<string[]>('segment_text', { text: query });
+      if (requestVersion !== questionRequestVersion) return;
       if (segments && segments.length > 0) {
         highlightTerms.value = segments;
         console.log('获取分词关键词:', segments);
       } else {
-        highlightTerms.value = searchTerm.value.trim().split(/\s+/).filter(t => t.length > 0);
+        highlightTerms.value = query.split(/\s+/).filter(t => t.length > 0);
       }
     } catch (error) {
+      if (requestVersion !== questionRequestVersion) return;
       console.warn('获取分词关键词失败:', error);
-      highlightTerms.value = searchTerm.value.trim().split(/\s+/).filter(t => t.length > 0);
+      highlightTerms.value = query.split(/\s+/).filter(t => t.length > 0);
     }
 
     // 执行搜索
-    if (props.selectedFolderId === PENDING_CORRECTION_FOLDER_ID) {
-      const keyword = searchTerm.value.trim().toLowerCase();
+    if (folderId === PENDING_CORRECTION_FOLDER_ID) {
+      const keyword = query.toLowerCase();
       const pendingQuestions = await databaseService.getPendingCorrectionQuestions();
+      if (requestVersion !== questionRequestVersion) return;
       questions.value = sortQuestionListByCreateTime(pendingQuestions.filter(question =>
         question.question.toLowerCase().includes(keyword)
       ));
     } else {
-      questions.value = sortQuestionListByCreateTime(
-        await databaseService.searchQuestionsByTitle(searchTerm.value.trim(), currentFolderId)
-      );
+      const results = await databaseService.searchQuestionsByTitle(query, currentFolderId);
+      if (requestVersion !== questionRequestVersion) return;
+      questions.value = sortQuestionListByCreateTime(results);
     }
 
     totalQuestions.value = questions.value.length;
@@ -1196,7 +1212,7 @@ const performSearch = async () => {
   } catch (error) {
     console.error('搜索失败:', error);
   } finally {
-    loading.value = false;
+    if (requestVersion === questionRequestVersion) loading.value = false;
   }
 };
 
@@ -1217,7 +1233,7 @@ const clearSearch = () => {
 // 高亮搜索关键词
 const highlightSearchTerm = (text: string): string => {
   if (!searchTerm.value.trim()) {
-    return text;
+    return highlightText(text);
   }
 
   // Use highlightTerms if available, otherwise split searchTerm
@@ -1226,12 +1242,7 @@ const highlightSearchTerm = (text: string): string => {
     terms = searchTerm.value.trim().split(/\s+/).filter(t => t.length > 0);
   }
   
-  if (terms.length === 0) return text;
-
-  // Escape special regex characters in terms
-  const escapedTerms = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const regex = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
-  return text.replace(regex, '<mark class="search-highlight">$1</mark>');
+  return highlightText(text, terms);
 };
 
 // 右键菜单处理函数

@@ -122,6 +122,7 @@ const freshDefaults = (): AppSettings => JSON.parse(JSON.stringify(DEFAULT_SETTI
 class SettingsManager {
   private settings: AppSettings
   private listeners: Set<(settings: AppSettings) => void> = new Set()
+  private pendingFileSave: Promise<void> = Promise.resolve()
 
   constructor() {
     this.settings = reactive(this.loadSettings())
@@ -150,7 +151,7 @@ class SettingsManager {
   }
 
   /**
-   * 从 exe 同级目录的 config.json 异步加载设置
+   * 从用户数据目录的 config.json 异步加载设置
    */
   private async loadFromFile(): Promise<void> {
     if (!environmentDetector.isTauriEnvironment(true)) return
@@ -170,9 +171,9 @@ class SettingsManager {
   }
 
   /**
-   * 保存设置到本地存储及 exe 同级目录的 config.json
+   * 保存设置到本地存储及用户数据目录的 config.json
    */
-  private saveSettings(): void {
+  private saveSettings(): Promise<void> {
     try {
       localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(this.settings))
       this.notifyListeners()
@@ -182,11 +183,14 @@ class SettingsManager {
     }
     // 异步写入配置文件
     if (environmentDetector.isTauriEnvironment(true)) {
-      import('@tauri-apps/api/core').then(({ invoke }) => {
-        invoke('write_config', { content: JSON.stringify(this.settings, null, 2) })
-          .catch(e => console.warn('写入配置文件失败:', e))
+      const content = JSON.stringify(this.settings, null, 2)
+      this.pendingFileSave = this.pendingFileSave.catch(() => {}).then(async () => {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('write_config', { content })
       })
+      return this.pendingFileSave
     }
+    return Promise.resolve()
   }
 
   /**
@@ -197,7 +201,7 @@ class SettingsManager {
       () => this.settings,
       () => {
         if (this.settings.autoSave) {
-          this.saveSettings()
+          void this.saveSettings().catch(error => console.warn('写入配置文件失败:', error))
         }
       },
       { deep: true }
@@ -248,15 +252,8 @@ class SettingsManager {
   /**
    * 手动保存设置
    */
-  save(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        this.saveSettings()
-        resolve()
-      } catch (error) {
-        reject(error)
-      }
-    })
+  async save(): Promise<void> {
+    await this.saveSettings()
   }
 
   /**

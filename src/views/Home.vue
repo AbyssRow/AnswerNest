@@ -502,7 +502,7 @@
 
   <!-- OCS配置对话框 -->
 
-  <OCSConfigDialog :visible="showOCSConfig" :current-port="configuredPort" @close="showOCSConfig = false"
+  <OCSConfigDialog :visible="showOCSConfig" :current-port="serverRunning ? serverPort : configuredPort" @close="showOCSConfig = false"
     @test="testOCSConnection" />
 
   <ModelWarningDialog :visible="showNoModelDialog" @close="showNoModelDialog = false"
@@ -1471,14 +1471,18 @@ const fetchRequestLogs = async () => {
 
     // 转换日志格式以匹配前端接口
     const formattedLogs = (logs as any[]).map((log: any) => ({
-      id: `${log.timestamp}-${Math.random().toString(36).substr(2, 9)}`,
+      id: log.id,
       timestamp: new Date(log.timestamp).getTime(),
       method: log.method,
       path: log.path,
       status: log.status,
-      ip: '127.0.0.1', // 后端暂时没有IP信息，使用默认值
-      userAgent: 'Unknown', // 后端暂时没有User-Agent信息，使用默认值
-      responseTime: log.response_time
+      ip: log.ip || '127.0.0.1',
+      userAgent: log.user_agent || 'Unknown',
+      responseTime: log.response_time,
+      requestBody: log.request_body || '',
+      responseBody: log.response_body || '',
+      headers: log.headers || {},
+      stage: log.stage,
     }))
 
     // 只在没有SSE连接时更新日志，避免重复
@@ -1779,6 +1783,8 @@ const startServer = async () => {
 
     serverRunning.value = (result as any).running
     serverUrl.value = (result as any).url || ''
+
+    serverPort.value = (result as any).port
 
     // 服务器启动成功后，启动SSE连接接收实时日志
     if ((result as any).running) {
@@ -2470,6 +2476,7 @@ onMounted(async () => {
   // 然后获取服务器状态
   setTimeout(async () => {
     await getServerStatus()
+    await fetchRequestLogs()
     // 获取服务器状态后，如果服务器正在运行，则启动SSE连接接收实时日志
     if (serverRunning.value) {
       startSSEConnection()

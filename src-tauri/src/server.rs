@@ -22,12 +22,7 @@ use warp::Filter;
 const QUERY_TEST_PAGE_HTML: &str = include_str!("query_test_page.html");
 
 fn read_app_config() -> serde_json::Value {
-    let config_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("config.json");
-    std::fs::read_to_string(&config_path)
+    crate::storage::read_config_file("config.json")
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
@@ -1219,15 +1214,7 @@ pub async fn start_server(
                 return Ok::<_, warp::Rejection>(warp::reply::json(&resp));
             }
             // 读取配置文件
-            let config_path = {
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                exe_dir.join("config.json")
-            };
-            let config_str = std::fs::read_to_string(&config_path).unwrap_or_default();
-            let config: serde_json::Value = serde_json::from_str(&config_str).unwrap_or_default();
+            let config = read_app_config();
             // 验证管理员token
             let admin_token = config
                 .get("adminToken")
@@ -1269,12 +1256,7 @@ pub async fn start_server(
                     warp::http::StatusCode::UNAUTHORIZED,
                 ));
             }
-            let path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("model_config.json");
-            let data: serde_json::Value = std::fs::read_to_string(&path)
+            let data: serde_json::Value = crate::storage::read_config_file("model_config.json")
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or(serde_json::json!({}));
@@ -1297,12 +1279,7 @@ pub async fn start_server(
                     warp::http::StatusCode::UNAUTHORIZED,
                 ));
             }
-            let path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("model_config.json");
-            match std::fs::write(&path, body.to_string()) {
+            match crate::storage::write_config_file("model_config.json", &body.to_string()) {
                 Ok(_) => Ok::<_, warp::Rejection>(warp::reply::with_status(
                     warp::reply::json(&serde_json::json!({"success": true})),
                     warp::http::StatusCode::OK,

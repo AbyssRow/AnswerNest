@@ -90,9 +90,11 @@ const readAnswers = (body: any): Record<string, any> | null => {
 }
 
 const yesProbability = (answer: any): number => {
-  if (typeof answer?.noul === 'number') return answer.noul
-  if (typeof answer?.probability === 'number') return answer.probability
-  return 0
+  const value = typeof answer?.noul === 'number' ? answer.noul : answer?.probability
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error('决策模型没有返回有效的答案概率')
+  }
+  return value
 }
 
 export const formatDecisionAnswer = (body: any, payload: Record<string, unknown>): string => {
@@ -108,6 +110,7 @@ export const formatDecisionAnswer = (body: any, payload: Record<string, unknown>
   if (questions.answer) {
     const choice = String(answers.answer?.choice || '').trim()
     if (!choice) throw new Error('决策模型没有选出选项')
+    if (!Object.prototype.hasOwnProperty.call(questions.answer.criteria, choice)) throw new Error('决策模型返回了选项之外的答案')
     return JSON.stringify({ answer: choice })
   }
   const picked = Object.keys(questions)

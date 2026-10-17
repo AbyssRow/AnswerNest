@@ -9,6 +9,10 @@ import { adoptRemotePlatforms } from '../src/services/remoteCatalogMigration'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { batchStatusLabel, canDownloadResults, endpointForModel } from '../src/services/batchUi'
+import { runAnswerWorkflow } from '../src/services/answerWorkflow'
+import { answerContextFromPrompt, answersDisagree, extractFinalAnswer } from '../src/utils/answerConsensus'
+import { buildAnswerChatMessages } from '../src/utils/answerFewShot'
+import { normalizeWebSearchConfig, runWebSearch } from '../src/services/webSearch'
 
 const platform: any = { id: 'p1', baseUrl: 'https://api.openai.com/v1', apiKey: 'test-key', models: [] }
 const model: any = { id: 'm1', modelId: 'gpt-4.1-mini', apiProtocol: 'openai-chat', maxTokens: 2048, temperature: 0, topP: 0.8 }
@@ -612,7 +616,7 @@ test('web search: answers only count as different when the final answers differ'
   const reply = (answer: string, thought = '先分析一下…') => `${thought}\n{"answer": "${answer}"}`
   assert.equal(extractComparableAnswer(reply('B. 传动角')), '传动角')
   assert.equal(extractComparableAnswer('```json\n{"answer":"Meeting."}\n```'), 'meeting')
-  assert.equal(extractComparableAnswer('思考\n最终：正确'), '最终正确')
+  assert.equal(extractComparableAnswer('思考\n最终：正确'), 'judge:true')
   assert.equal(answersDisagree([reply('传动角', '理由甲'), reply('B. 传动角', '理由乙完全不同')]), false)
   assert.equal(answersDisagree([reply('传动角'), reply('压力角')]), true)
   assert.equal(answersDisagree([reply('传动角')]), false)
@@ -655,4 +659,211 @@ test('web search: answer comparison ignores order, width, case, punctuation and 
   assert.notEqual(extractComparableAnswer(reply('是非曲直')), 'judge:true')
   assert.notEqual(extractComparableAnswer(reply('对数函数')), 'judge:true')
   assert.equal(answersDisagree([reply('对数函数'), reply('指数函数')]), true)
+})
+
+const workflowQuestion = '【题目类型：单选题】\n【题目】\n中国的首都是哪个城市\n【选项】\nA. 北京\nB. 上海\n\n请作答'
+const modelAnswer = (name: string, answer: string, success = true) => ({
+  model: { displayName: name }, response: success ? JSON.stringify({ answer }) : answer, success
+})
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+test('workflow: all answer models finish before consensus skips search and summary', async () => {
+  const last = deferred<ReturnType<typeof modelAnswer>>()
+  let finished = false
+  const result = runAnswerWorkflow({
+    query: workflowQuestion,
+    answers: [Promise.resolve(modelAnswer('first', 'A')), last.promise],
+    summaryModels: [{ displayName: 'summary' }],
+    search: async () => { assert.fail('consensus must not search') },
+    summarize: async () => { assert.fail('consensus must not summarize') },
+    isCancelled: () => false
+  }).then(result => { finished = true; return result })
+  await flush()
+  assert.equal(finished, false)
+  last.resolve(modelAnswer('last', '北京'))
+  assert.equal((await result).response, '{"answer":"北京"}')
+})
+
+test('workflow: disagreement waits for search and sends both model answers and web content over every summary protocol', async () => {
+  for (const protocol of ['openai-chat', 'openai-response', 'anthropic']) {
+    const answer = deferred<ReturnType<typeof modelAnswer>>()
+    const searchResponse = deferred<Response>()
+    const events: string[] = []
+    let summaryPayload = ''
+    const result = runAnswerWorkflow({
+      query: workflowQuestion,
+      answers: [Promise.resolve({ ...modelAnswer('first', '北京'), response: '理由一\n{"answer":"北京"}' }), answer.promise],
+      summaryModels: [{ displayName: 'summary' }],
+      search: async () => {
+        events.push('search')
+        return runWebSearch(normalizeWebSearchConfig({ enabled: true, apiKey: 'test' }), workflowQuestion, {
+          fetchImpl: async () => searchResponse.promise
+        })
+      },
+      summarize: async (model, query) => {
+        events.push('summary')
+        const messages = buildAnswerChatMessages(query)
+        const { request } = await execute(protocol, {}, { messages })
+        summaryPayload = JSON.stringify(request.body)
+        return modelAnswer(model.displayName, '北京')
+      },
+      isCancelled: () => false
+    }).then(result => { events.push('submit'); return result })
+    await flush()
+    assert.deepEqual(events, [])
+    answer.resolve({ ...modelAnswer('second', '上海'), response: '理由二\n{"answer":"上海"}' })
+    await flush()
+    assert.deepEqual(events, ['search'])
+    searchResponse.resolve(jsonResponse({ data: { web: [{ title: '参考网页', url: 'https://example.test/source', markdown: '网页独有证据：首都北京' }] } }))
+    assert.equal((await result).response, '{"answer":"北京"}')
+    assert.deepEqual(events, ['search', 'summary', 'submit'])
+    for (const text of ['理由一', '理由二', '北京', '上海', '网页独有证据', 'https://example.test/source']) assert.ok(summaryPayload.includes(text), `${protocol}: missing ${text}`)
+  }
+})
+
+test('workflow: disabled/failed search still summarizes; unavailable summaries use one majority final answer', async () => {
+  const answers = [modelAnswer('first', '上海'), modelAnswer('second', '北京'), { ...modelAnswer('third', 'A'), response: 'different reasoning\n{"answer":"A"}' }]
+  for (const search of [undefined, async () => ({ ok: false, text: '错误: 搜索超时', items: [], query: '', tookMs: 1 }), async () => { throw Error('search offline') }]) {
+    const output = await runAnswerWorkflow({
+      query: workflowQuestion, answers: answers.map(entry => Promise.resolve(entry)),
+      summaryModels: [{ displayName: 'summary' }], search,
+      summarize: async (model, query) => {
+        assert.ok(query.includes('different reasoning'))
+        assert.ok(!query.includes('错误: 搜索超时'))
+        return modelAnswer(model.displayName, '错误: unavailable', false)
+      }, isCancelled: () => false
+    })
+    assert.equal(output.response, '{"answer":"北京"}')
+    assert.equal(output.fromSummary, false)
+    assert.equal(output.source?.model.displayName, 'second')
+  }
+  const output = await runAnswerWorkflow({
+    query: workflowQuestion, answers: answers.map(entry => Promise.resolve(entry)), summaryModels: [],
+    search: async () => { assert.fail('no summary model should not spend on search') },
+    summarize: async () => { assert.fail('no summary') }, isCancelled: () => false
+  })
+  assert.equal(output.response, '{"answer":"北京"}')
+})
+
+test('workflow: failed, rejected and empty model answers cannot create a consensus or become a submitted answer', async () => {
+  for (const successful of [[], [modelAnswer('only', '北京')]]) {
+    const output = await runAnswerWorkflow({
+      query: workflowQuestion,
+      answers: [...successful, modelAnswer('empty', ''), modelAnswer('broken', '错误: unavailable', false)].map(entry => Promise.resolve(entry)).concat([Promise.reject(Error('network'))]),
+      summaryModels: [{ displayName: 'summary' }],
+      search: async () => { assert.fail('no disagreement') }, summarize: async () => { assert.fail('no disagreement') },
+      isCancelled: () => false
+    })
+    assert.equal(output.success, successful.length > 0)
+    if (output.success) assert.equal(output.response, '{"answer":"北京"}')
+    else assert.match(output.response, /^错误:/)
+  }
+})
+
+test('workflow: multiple summaries vote on final answers and return exactly one JSON object', async () => {
+  const output = await runAnswerWorkflow({
+    query: workflowQuestion,
+    answers: [Promise.resolve(modelAnswer('base1', '北京')), Promise.resolve(modelAnswer('base2', '上海'))],
+    summaryModels: ['s1', 's2', 's3', 'empty', 'reject'].map(displayName => ({ displayName })),
+    summarize: async (model) => {
+      if (model.displayName === 'reject') throw Error('network')
+      return modelAnswer(model.displayName, model.displayName === 'empty' ? '' : model.displayName === 's1' ? '上海' : '北京')
+    }, isCancelled: () => false
+  })
+  assert.equal(output.response, '{"answer":"北京"}')
+  assert.equal(output.fromSummary, true)
+  assert.equal(output.source?.model.displayName, 's2')
+})
+
+test('workflow: cancellation while answering, searching or summarizing prevents final output', async () => {
+  for (const stage of ['answer', 'search', 'summary']) {
+    let cancelled = stage === 'answer'
+    await assert.rejects(runAnswerWorkflow({
+      query: workflowQuestion,
+      answers: [Promise.resolve(modelAnswer('base1', '北京')), Promise.resolve(modelAnswer('base2', '上海'))],
+      summaryModels: [{ displayName: 'summary' }],
+      search: async () => { cancelled = stage === 'search'; return null },
+      summarize: async model => { assert.equal(stage, 'summary'); cancelled = true; return modelAnswer(model.displayName, '北京') },
+      isCancelled: () => cancelled
+    }), error => error instanceof DOMException && error.name === 'AbortError')
+  }
+})
+
+test('answer comparison: preserve numeric signs, punctuation, case and fill-in order; decode JSON escapes', () => {
+  const reply = (text: string) => JSON.stringify({ answer: text })
+  for (const [a, b] of [['-1', '1'], ['3.14', '314'], ['a+b', 'ab'], ['C++', 'C'], ['x<2', 'x>2'], ['1/2', '12']]) {
+    assert.equal(answersDisagree([reply(a), reply(b)]), true, `${a} != ${b}`)
+  }
+  const completion = { kind: '填空题' }
+  assert.equal(answersDisagree([reply('北京###上海'), reply('上海###北京')], completion), true)
+  assert.equal(answersDisagree([reply('C'), reply('c')], completion), true)
+  assert.equal(answersDisagree([reply('5!'), reply('5')], completion), true)
+  assert.equal(answersDisagree([reply('北京###上海'), reply('上海###北京')], { kind: '多选题' }), false)
+  assert.equal(answersDisagree([reply('√'), reply('正确')], { kind: '判断题' }), false)
+  assert.equal(answersDisagree([reply('对'), reply('正确')], { kind: '填空题' }), true)
+  assert.equal(answersDisagree(['{"answer":"\\u5317\\u4eac"}', reply('北京')]), false)
+  assert.equal(extractFinalAnswer(reply('集合 {x} 和 "y"')), '集合 {x} 和 "y"')
+  assert.equal(extractFinalAnswer('{"answer":""}'), '')
+  assert.equal(extractFinalAnswer('{"error":"missing"}'), '')
+  assert.equal(extractFinalAnswer('错误: 连接失败'), '')
+  const options = answerContextFromPrompt(workflowQuestion)
+  assert.equal(answersDisagree([reply('A'), reply('北京')], options), false)
+  assert.equal(answersDisagree([reply('AB'), reply('上海###北京')], { ...options, kind: '多选题' }), false)
+})
+
+test('web search: already cancelled requests do not fetch, and result count is bounded', async () => {
+  const config = normalizeWebSearchConfig({ enabled: true, apiKey: 'test', maxResults: 1 })
+  const controller = new AbortController()
+  controller.abort()
+  const cancelled = await runWebSearch(config, workflowQuestion, { signal: controller.signal, fetchImpl: async () => { assert.fail('cancelled request fetched') } })
+  assert.match(cancelled.text, /已取消/)
+  const limited = await runWebSearch(config, workflowQuestion, { fetchImpl: async () => jsonResponse({ data: { web: [{ title: 'one' }, { title: 'two' }] } }) })
+  assert.equal(limited.items.length, 1)
+  assert.ok(!limited.text.includes('two'))
+  const legacy = normalizeWebSearchConfig({ onlyWhenDisagree: false } as any)
+  assert.equal('onlyWhenDisagree' in legacy, false)
+})
+
+test('decision models: missing probabilities and choices outside the supplied options are failures', async () => {
+  const { buildDecisionPayload, formatDecisionAnswer } = await import('../src/services/decisionApi')
+  const judge = buildDecisionPayload('decision', '【题目类型：判断题】\n【题目】\n测试')!
+  for (const answers of [{}, { judge: {} }, { judge: { noul: -1 } }, { judge: { noul: 2 } }, { judge: { noul: NaN } }]) {
+    assert.throws(() => formatDecisionAnswer({ answers }, judge), /有效的答案概率/)
+  }
+  assert.equal(formatDecisionAnswer({ answers: { judge: { noul: 0 } } }, judge), '{"answer":"错误"}')
+  const single = buildDecisionPayload('decision', workflowQuestion)!
+  assert.throws(() => formatDecisionAnswer({ answers: { answer: { choice: '广州' } } }, single), /选项之外/)
+  const multiple = buildDecisionPayload('decision', workflowQuestion.replace('单选题', '多选题'))!
+  assert.throws(() => formatDecisionAnswer({ answers: { opt0: { noul: 0.9 } } }, multiple), /有效的答案概率/)
+})
+
+test('settings: changing nested values never mutates defaults, including after repeated resets', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => null, setItem: () => {} } })
+  try {
+    const { settingsManager } = await import('../src/services/settings')
+    const { nextTick } = await import('vue')
+    const settings = settingsManager.getSettings()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      settings.webSearch.enabled = true
+      settings.webSearch.apiKey = 'temporary-test-key'
+      settings.network.serverPort = 9999
+      settingsManager.reset()
+      assert.equal(settings.webSearch.enabled, false)
+      assert.equal(settings.webSearch.apiKey, '')
+      assert.equal(settings.network.serverPort, 3000)
+      settings.webSearch.maxResults = 9
+      settingsManager.resetKey('webSearch')
+      assert.equal(settings.webSearch.maxResults, 3)
+    }
+    await nextTick()
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
 })

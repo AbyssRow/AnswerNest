@@ -91,7 +91,7 @@
 
       <div class="setting-info">
         <h3 class="setting-title">模型最长响应时间</h3>
-        <p class="setting-description">AI 模型单次请求超时（秒）。超时后中止该次调用并可按「失败自动重试次数」重试；整题最长等待 ≈ 本值 × (1+重试) + 缓冲。默认 40 秒。</p>
+        <p class="setting-description">AI 模型单次请求超时（秒）。超时后可按「失败自动重试次数」重试；整题等待覆盖答题、搜索、总结和附件读取。默认 40 秒。</p>
       </div>
       <div class="setting-control timeout-control">
         <input
@@ -131,7 +131,7 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">总结时联网搜索</h3>
-        <p class="setting-description">选了总结模型时，先用题目搜索一次网页，把搜到的资料连同各答题模型的回答一起交给总结模型，帮它核对答案。搜索结果会显示在日志里和答题模型放在一起。带图片的题不搜索；搜索失败不影响答题，只是没有这份资料。</p>
+        <p class="setting-description">所有答题模型完成后，答案一致直接提交；答案不一致时，先搜索一次，再把各模型回答和搜索资料一起交给总结模型。需要选择总结模型并填写搜索 Key。搜索资料显示在日志里；带图片的题不搜索，搜索失败则仅依据模型回答总结。</p>
       </div>
       <div class="setting-control">
         <Toggle v-model="settings.webSearch.enabled" variant="default" size="medium" />
@@ -181,15 +181,6 @@
           <option value="auto">自动</option>
           <option value="always">总是带选项</option>
         </select>
-      </div>
-    </div>
-    <div class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">只在答案不一致时搜索</h3>
-        <p class="setting-description">答题模型的答案都一样时不搜索，省额度。需要至少两个答题模型；搜索会等答题结束后才开始，总耗时会多一点。关闭则搜索和答题同时进行。</p>
-      </div>
-      <div class="setting-control">
-        <Toggle v-model="settings.webSearch.onlyWhenDisagree" variant="default" size="medium" />
       </div>
     </div>
     <div class="setting-item">

@@ -112,6 +112,9 @@ const DEFAULT_SETTINGS: AppSettings = {
 // 设置存储键
 const SETTINGS_STORAGE_KEY = 'app_settings'
 
+// 每次载入或重置都复制嵌套对象，防止修改设置时连出厂默认值一起改掉。
+const freshDefaults = (): AppSettings => JSON.parse(JSON.stringify(DEFAULT_SETTINGS))
+
 /**
  * 设置管理器类
  * 提供设置的读取、保存、重置等功能
@@ -136,14 +139,14 @@ class SettingsManager {
       if (stored) {
         const parsedSettings = { ...(JSON.parse(stored) || {}) }
         delete parsedSettings.enableNonThinkingModelAnalysis
-        return { ...DEFAULT_SETTINGS, ...parsedSettings, network: { ...DEFAULT_SETTINGS.network, ...(parsedSettings.network || {}) }, webSearch: normalizeWebSearchConfig(parsedSettings.webSearch) }
+        return { ...freshDefaults(), ...parsedSettings, network: { ...DEFAULT_SETTINGS.network, ...(parsedSettings.network || {}) }, webSearch: normalizeWebSearchConfig(parsedSettings.webSearch) }
       }
 
 
     } catch (error) {
       console.warn('加载设置失败，使用默认设置:', error)
     }
-    return { ...DEFAULT_SETTINGS }
+    return freshDefaults()
   }
 
   /**
@@ -157,7 +160,7 @@ class SettingsManager {
       if (content) {
         const parsed = { ...(JSON.parse(content) || {}) }
         delete parsed.enableNonThinkingModelAnalysis
-        Object.assign(this.settings, { ...DEFAULT_SETTINGS, ...parsed, network: { ...DEFAULT_SETTINGS.network, ...(parsed.network || {}) }, webSearch: normalizeWebSearchConfig(parsed.webSearch) })
+        Object.assign(this.settings, { ...freshDefaults(), ...parsed, network: { ...DEFAULT_SETTINGS.network, ...(parsed.network || {}) }, webSearch: normalizeWebSearchConfig(parsed.webSearch) })
         console.log('已从配置文件加载设置')
       }
 
@@ -260,14 +263,14 @@ class SettingsManager {
    * 重置设置为默认值
    */
   reset(): void {
-    Object.assign(this.settings, DEFAULT_SETTINGS)
+    Object.assign(this.settings, freshDefaults())
   }
 
   /**
    * 重置特定设置项
    */
   resetKey<K extends keyof AppSettings>(key: K): void {
-    this.settings[key] = DEFAULT_SETTINGS[key]
+    this.settings[key] = freshDefaults()[key]
   }
 
   /**

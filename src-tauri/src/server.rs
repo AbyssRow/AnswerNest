@@ -56,6 +56,10 @@ fn should_auto_add_to_question_bank() -> bool {
 /// - absolute：整段等待硬上限（覆盖重试，且不受 keepalive 续命）
 fn model_wait_budget_secs(has_url: bool) -> (u64, u64) {
     let cfg = read_app_config();
+    model_wait_budget_from_config(&cfg, has_url)
+}
+
+fn model_wait_budget_from_config(cfg: &serde_json::Value, has_url: bool) -> (u64, u64) {
     let timeout = cfg
         .get("modelResponseTimeout")
         .and_then(|v| v.as_u64())
@@ -66,9 +70,16 @@ fn model_wait_budget_secs(has_url: bool) -> (u64, u64) {
         .and_then(|v| v.as_u64())
         .unwrap_or(2)
         .min(10);
-    let inactivity = timeout.saturating_add(20).max(30);
+    let search_timeout = cfg.get("webSearch")
+        .filter(|search| search.get("enabled").and_then(|v| v.as_bool()) == Some(true))
+        .map(|search| search.get("timeoutSec").and_then(|v| v.as_u64()).unwrap_or(20).clamp(3, 120))
+        .unwrap_or(0);
+    let inactivity = timeout.max(search_timeout).saturating_add(20).max(30);
+    // 答题和总结顺序执行，各自可重试；附件读取另有一个单次超时。
     let absolute = timeout
-        .saturating_mul(retries + 1)
+        .saturating_mul(2 * (retries + 1) + 1)
+        .saturating_add(search_timeout)
+        .saturating_add(2 * retries * 2) // 两阶段的重试退避，每次最多 2 秒
         .saturating_add(if has_url { 90 } else { 60 })
         .max(inactivity);
     (inactivity, absolute)
@@ -1823,6 +1834,21 @@ mod same_question_tests {
         classify_model_failure, extract_answer_from_json, parse_same_question_result,
         truncate_chars,
     };
+
+    #[test]
+    fn wait_budget_covers_answer_search_summary_and_retries() {
+        let cfg = serde_json::json!({
+            "modelResponseTimeout": 40, "modelRetryCount": 2,
+            "webSearch": {"enabled": true, "timeoutSec": 120}
+        });
+        let (idle, absolute) = super::model_wait_budget_from_config(&cfg, false);
+        assert_eq!(idle, 140);
+        assert!(absolute >= 40 * 3 * 2 + 40 + 120 + 8 + 60);
+        let disabled = serde_json::json!({"modelResponseTimeout": 5, "modelRetryCount": 0,
+            "webSearch": {"enabled": false, "timeoutSec": 120}});
+        assert_eq!(super::model_wait_budget_from_config(&disabled, false), (30, 75));
+        assert_eq!(super::model_wait_budget_from_config(&disabled, true), (30, 105));
+    }
 
 
     /// OCS 网课助手 5.2.1 按我们给出的题库配置实际发送/接收的数据格式

@@ -515,8 +515,6 @@
 import { providerClientOptions } from '../services/providerTransport'
 import {
   WEB_SEARCH_PROVIDERS,
-  answersDisagree,
-  buildSearchContextBlock,
   buildSearchQuery,
   normalizeWebSearchConfig,
   runWebSearch,
@@ -552,6 +550,7 @@ import { buildAnswerChatMessages } from '../utils/answerFewShot'
 import { findImageUrls, loadQuestionFileText, pickAnswerModels, questionHasImages } from '../utils/questionAttachments'
 import { callDecisionModel, decisionCanAnswer } from '../services/decisionApi'
 import { normalizeApiProtocol } from '../services/modelProtocol'
+import { runAnswerWorkflow } from '../services/answerWorkflow'
 
 
 
@@ -1014,6 +1013,8 @@ const releaseRequestLogPayload = (log: RequestLog) => {
 
 const isRequestInFlight = (requestId: string) =>
   activeModelAbortControllers.has(requestId) || activeUrlAnalysisRequestIds.has(requestId)
+  || heartbeatIntervals.has(requestId)
+  || ['answer', 'same', 'url'].some(phase => inflightModelCallKeys.has(`${requestId}:${phase}`))
 
 /** 裁剪/清空时同步释放 requestId 相关的侧边状态，避免 Map/Set 只增不减 */
 const evictRequestSideState = (requestIds: Iterable<string>, { force = false } = {}) => {
@@ -1024,10 +1025,11 @@ const evictRequestSideState = (requestIds: Iterable<string>, { force = false } =
       clearRequestHeartbeat(requestId)
       finalModelResponseState.delete(requestId)
       processedRequestIds.delete(requestId)
-      cancelledRequestIds.delete(requestId)
+      if (!inFlight) cancelledRequestIds.delete(requestId)
       activeUrlAnalysisRequestIds.delete(requestId)
     }
     if (force && inFlight) {
+      cancelledRequestIds.add(requestId)
       const controllers = activeModelAbortControllers.get(requestId)
       if (controllers) {
         controllers.forEach((controller) => {
@@ -1038,7 +1040,6 @@ const evictRequestSideState = (requestIds: Iterable<string>, { force = false } =
       clearRequestHeartbeat(requestId)
       finalModelResponseState.delete(requestId)
       processedRequestIds.delete(requestId)
-      cancelledRequestIds.delete(requestId)
       activeUrlAnalysisRequestIds.delete(requestId)
     }
   }
@@ -1074,7 +1075,7 @@ const clearAllRequestRuntimeState = () => {
   if (selectedLog.value) releaseRequestLogPayload(selectedLog.value)
   evictRequestSideState(allIds, { force: true })
   activeModelAbortControllers.clear()
-  cancelledRequestIds.clear()
+  // 活跃流程在 finally 中释放取消标记，避免清空日志后继续搜索、重试或提交。
   finalModelResponseState.clear()
   processedRequestIds.clear()
   activeUrlAnalysisRequestIds.clear()
@@ -1950,57 +1951,6 @@ const stripMarkdownCodeBlock = (content: string): string => {
   return content.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '')
 }
 
-/** 拼装多模型输出：成功内容或真实报错原文，不使用统一失败文案 */
-const formatModelOutputs = (
-  entries: Array<{ model: { displayName: string }; response: string }>
-): string => {
-  const usable = entries.filter(e => (e.response || '').trim())
-  if (usable.length === 0) return ''
-  if (usable.length === 1) return usable[0].response
-  return usable.map(e => `[${e.model.displayName}]\n${e.response}`).join('\n\n')
-}
-
-const normalizeAnswerForComparison = (content: string): string => {
-  return stripMarkdownCodeBlock(content || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-const getMostFrequentSuccessfulAnswer = (responses: string[]): string => {
-  const answerStats = new Map<string, { count: number; firstIndex: number; original: string }>()
-
-  responses.forEach((response, index) => {
-    const original = stripMarkdownCodeBlock(response).trim()
-    const key = normalizeAnswerForComparison(original)
-    if (!key) return
-
-    const existing = answerStats.get(key)
-    if (existing) {
-      existing.count += 1
-      return
-    }
-
-    answerStats.set(key, {
-      count: 1,
-      firstIndex: index,
-      original,
-    })
-  })
-
-  let selected: { count: number; firstIndex: number; original: string } | null = null
-  for (const stat of answerStats.values()) {
-    if (
-      !selected ||
-      stat.count > selected.count ||
-      (stat.count === selected.count && stat.firstIndex < selected.firstIndex)
-    ) {
-      selected = stat
-    }
-  }
-
-  return selected?.original || ''
-}
-
 const getReasoningContentValue = (payload: any): string => {
   const candidates = [
     payload?.reasoning_content,
@@ -2693,7 +2643,10 @@ const dispatchModelCallRequest = (requestId: string, query: string, images?: unk
   }
   inflightModelCallKeys.add(key)
 
-  const done = () => { inflightModelCallKeys.delete(key) }
+  const done = () => {
+    inflightModelCallKeys.delete(key)
+    if (!isRequestInFlight(requestId)) cancelledRequestIds.delete(requestId)
+  }
 
   if (phase === 'url') {
     void callModelAPI(requestId, urlMarkerToAnswerPrompt(query)).finally(done)
@@ -2782,6 +2735,7 @@ const callModelAPI = async (requestId: string, query: string) => {
 
     let fileText = ''
     const fileAbort = new AbortController()
+    registerAbortController(requestId, fileAbort)
     const { settings: fileSettings } = useSettings()
     const fileTimer = setTimeout(() => fileAbort.abort(), (fileSettings.modelResponseTimeout ?? 40) * 1000)
     try {
@@ -2792,7 +2746,9 @@ const callModelAPI = async (requestId: string, query: string) => {
       console.warn('附件文件读取失败', error)
     } finally {
       clearTimeout(fileTimer)
+      unregisterAbortController(requestId, fileAbort)
     }
+    if (isRequestCancelled(requestId)) return
     const answerMedia = {
       images: [...extraImages, ...findImageUrls(query)],
       attachImages: hasImages,
@@ -2800,11 +2756,12 @@ const callModelAPI = async (requestId: string, query: string) => {
     }
 
     // 联网搜索：只在有总结模型、不是图片题、题目有文字时做；一次请求只搜一次，结果写进总结提示词。
-    // 默认和答题模型同时开始；开了「只在答案不一致时搜索」就等答题结束再决定。
+    // 答题全部完成且答案不一致时才搜索，搜索完成后再调用总结模型。
+    const summaryModels = globalSelectedSummaryModels.value.filter(model => normalizeApiProtocol(model.apiProtocol) !== 'decision')
     const searchConfig = normalizeWebSearchConfig(settings.webSearch)
     const searchWanted = webSearchReady(searchConfig)
       && !hasImages
-      && globalSelectedSummaryModels.value.some(model => normalizeApiProtocol(model.apiProtocol) !== 'decision')
+      && summaryModels.length > 0
       && !!buildSearchQuery(query, searchConfig)
     const searchName = WEB_SEARCH_PROVIDERS.find(p => p.id === searchConfig.provider)?.name || '联网搜索'
     const searchKey = 'search:' + searchConfig.provider
@@ -2828,9 +2785,13 @@ const callModelAPI = async (requestId: string, query: string) => {
         })
       }
     }
-    const startSearch = (): Promise<WebSearchOutcome | null> => {
+    const startSearch = async (): Promise<WebSearchOutcome | null> => {
+      if (isRequestCancelled(requestId)) return null
+      const controller = new AbortController()
+      registerAbortController(requestId, controller)
       upsertSearchEntry({ isLoading: true, response: '正在联网搜索…' })
-      return runWebSearch(searchConfig, query).then(outcome => {
+      try {
+        const outcome = await runWebSearch(searchConfig, query, { signal: controller.signal })
         if (isRequestCancelled(requestId)) return null
         upsertSearchEntry({
           isLoading: false,
@@ -2840,13 +2801,12 @@ const callModelAPI = async (requestId: string, query: string) => {
         })
         if (!outcome.ok) console.warn('[联网搜索失败]', outcome.text)
         return outcome
-      })
+      } finally {
+        unregisterAbortController(requestId, controller)
+      }
     }
-    let searchPromise: Promise<WebSearchOutcome | null> | null =
-      searchWanted && !searchConfig.onlyWhenDisagree ? startSearch() : null
 
     // 并发调用答题模型。纯文本全答；带图片只答开了视觉的。
-    const results: { model: AIModel; response: string; success: boolean }[] = []
     const modelPromises = selectedModels.map(async (model) => {
       const allowRetry = selectedModels.length === 1
       try {
@@ -2913,200 +2873,99 @@ const callModelAPI = async (requestId: string, query: string) => {
       }
     })
 
-    // quorum: 使用 Promise.allSettled 等待所有完成，但通过 onChunk 已经逐步更新了 UI
-    const settledResults = await Promise.allSettled(modelPromises)
-    for (const settled of settledResults) {
-      if (settled.status === 'fulfilled' && settled.value !== null) {
-        results.push(settled.value)
-      }
-    }
-
-    if (isRequestCancelled(requestId)) return
-
-    // --- 阶段 2: 汇总与总结 (Summary Phase) ---
-    const summaryModels = globalSelectedSummaryModels.value.filter(model => normalizeApiProtocol(model.apiProtocol) !== 'decision')
-
-    // 过滤掉失败的基础模型结果，只用成功的部分做总结和最终答案
-    const successfulBaseEntries = results.filter(result => result.success)
-    const successfulResults = successfulBaseEntries.map(entry => entry.response)
-    const successfulModels = successfulBaseEntries.map(entry => entry.model)
-
-    const baseCombinedResponse = successfulModels.length === 1
-      ? successfulResults[0]
-      : successfulModels.map((model, i) => `[${model.displayName}]\n${successfulResults[i]}`).join('\n\n')
-    const majorityBaseAnswer = getMostFrequentSuccessfulAnswer(successfulResults)
-
-    if (summaryModels.length > 0 && successfulResults.length > 0) {
-      console.log('开始总结阶段:', summaryModels.map(m => m.displayName))
-
-      // 在日志中添加总结模型的占位项（如果尚未在多模型数组中）
-      const log = requestLogs.value.find(l => l.id === requestId)
-      if (log) {
-        if (!log.multiModelResponses) {
-          log.multiModelResponses = []
+    const outcome = await runAnswerWorkflow({
+      query,
+      answers: modelPromises,
+      summaryModels,
+      search: searchWanted ? startSearch : undefined,
+      isCancelled: () => isRequestCancelled(requestId),
+      summarize: async (model, summaryQuery) => {
+        const summaryKey = 'summary:' + model.id
+        const log = requestLogs.value.find(l => l.id === requestId)
+        if (log) {
+          if (!log.multiModelResponses) log.multiModelResponses = []
+          const platform = platforms.value.find(p => p.models.some(m => m.id === model.id))
+          log.multiModelResponses.push({
+            modelId: summaryKey,
+            modelName: '总结: ' + model.displayName,
+            platformName: platform?.displayName || '未知平台',
+            response: '', streamingReasoning: '', reasoningContent: '', isLoading: true
+          })
         }
-
-        // 避免重复添加（针对可能的并发重试）
-        const existingIds = new Set(log.multiModelResponses.map(r => r.modelId))
-        summaryModels.forEach(model => {
-          const summaryKey = `summary:${model.id}`
-          if (!existingIds.has(summaryKey)) {
-            const platform = platforms.value.find(p => p.models.some(m => m.id === model.id))
-            log.multiModelResponses!.push({
-              modelId: summaryKey,
-              modelName: `总结: ${model.displayName}`,
-              platformName: platform?.displayName || '未知平台',
-              response: '',
-              streamingReasoning: '',
-              reasoningContent: '',
-              isLoading: true
-            })
-          }
-        })
-      }
-
-      // 联网搜索资料：搜索失败只是没有这段资料，不影响总结
-      let searchSection = ''
-      if (searchWanted) {
-        if (!searchPromise && searchConfig.onlyWhenDisagree) {
-          if (answersDisagree(successfulResults)) searchPromise = startSearch()
-          else upsertSearchEntry({ isLoading: false, response: '已跳过：各模型的答案一致，不需要搜索' })
-        }
-        if (searchPromise) {
-          const searchOutcome = await searchPromise
-          if (isRequestCancelled(requestId)) return
-          if (searchOutcome?.ok) searchSection = buildSearchContextBlock(searchOutcome.text) + '\n\n'
-        }
-      }
-
-      const summaryQuery = `你是一个总结专家。下面是用户的问题以及AI模型的回答。请根据回答内容，整理并总结出一个最准确、最全面的最终答案。
-
-用户原始问题：
-${query}
-
-${searchSection}模型回答内容：
-${baseCombinedResponse}
-
-请直接给出最终总结答案：`
-
-      const summaryResults = await Promise.all(
-        summaryModels.map(async (model) => {
-          const summaryKey = `summary:${model.id}`
-          try {
-            const response = await withModelRetry(
-              requestId,
-              `总结:${model.displayName}`,
-              true,
-              async (attempt, maxAttempts) => {
-                const l = requestLogs.value.find(x => x.id === requestId)
-                const entry = l?.multiModelResponses?.find(r => r.modelId === summaryKey)
-                if (entry) {
-                  entry.isLoading = true
-                  if (attempt > 1) {
-                    entry.response = `总结重试中（${attempt}/${maxAttempts}）…`
-                    entry.streamingReasoning = ''
-                  }
-                }
-                return callModelWithStreaming(
-                  model,
-                  summaryQuery,
-                  requestId,
-                  (content) => updateMultiModelStreamingResponse(requestId, summaryKey, stripMarkdownCodeBlock(content)),
-                  (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning),
-                  answerMedia
-                )
-              },
-              (attempt, maxAttempts) => {
-                const l = requestLogs.value.find(x => x.id === requestId)
-                const entry = l?.multiModelResponses?.find(r => r.modelId === summaryKey)
-                if (entry) {
-                  entry.isLoading = true
-                  entry.response = `总结第 ${attempt} 次失败，准备重试（${attempt + 1}/${maxAttempts}）…`
+        try {
+          const response = await withModelRetry(
+            requestId,
+            `总结:${model.displayName}`,
+            true,
+            async (attempt, maxAttempts) => {
+              const l = requestLogs.value.find(x => x.id === requestId)
+              const entry = l?.multiModelResponses?.find(r => r.modelId === summaryKey)
+              if (entry) {
+                entry.isLoading = true
+                if (attempt > 1) {
+                  entry.response = `总结重试中（${attempt}/${maxAttempts}）…`
+                  entry.streamingReasoning = ''
                 }
               }
-            )
-            const strippedResponse = stripMarkdownCodeBlock(response)
-            const l = requestLogs.value.find(l => l.id === requestId)
-            if (l?.multiModelResponses) {
-              const entry = l.multiModelResponses.find(r => r.modelId === summaryKey)
-              if (entry) { entry.isLoading = false; entry.response = strippedResponse }
+              return callModelWithStreaming(
+                model,
+                summaryQuery,
+                requestId,
+                (content) => updateMultiModelStreamingResponse(requestId, summaryKey, stripMarkdownCodeBlock(content)),
+                (reasoning) => updateMultiModelStreamingReasoning(requestId, summaryKey, reasoning),
+                answerMedia
+              )
+            },
+            (attempt, maxAttempts) => {
+              const l = requestLogs.value.find(x => x.id === requestId)
+              const entry = l?.multiModelResponses?.find(r => r.modelId === summaryKey)
+              if (entry) {
+                entry.isLoading = true
+                entry.response = `总结第 ${attempt} 次失败，准备重试（${attempt + 1}/${maxAttempts}）…`
+              }
             }
-            finalizeMultiModelReasoning(requestId, summaryKey)
-            return {
-              model,
-              response: strippedResponse,
-              success: true
-            }
-
-          } catch (error) {
-            if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
-              throw createCancelledRequestError()
-            }
-            const errText = `错误: ${formatModelCallError(error, '总结失败')}`
-            console.error(`[总结失败] ${model.displayName}:`, error)
-            const l = requestLogs.value.find(l => l.id === requestId)
-            if (l?.multiModelResponses) {
-              const entry = l.multiModelResponses.find(r => r.modelId === summaryKey)
-              if (entry) { entry.isLoading = false; entry.response = errText }
-            }
-            return {
-              model,
-              response: errText,
-              success: false
-            }
+          )
+          const strippedResponse = stripMarkdownCodeBlock(response)
+          const l = requestLogs.value.find(l => l.id === requestId)
+          if (l?.multiModelResponses) {
+            const entry = l.multiModelResponses.find(r => r.modelId === summaryKey)
+            if (entry) { entry.isLoading = false; entry.response = strippedResponse }
           }
-        })
-      )
+          finalizeMultiModelReasoning(requestId, summaryKey)
+          return {
+            model,
+            response: strippedResponse,
+            success: true
+          }
 
-      if (isRequestCancelled(requestId)) return
-
-      const successfulSummaryEntries = summaryResults.filter(entry => entry.success)
-
-      if (successfulSummaryEntries.length > 0) {
-        finalOutput = formatModelOutputs(
-          successfulSummaryEntries.map(entry => ({
-            model: { displayName: `${entry.model.displayName} 总结` },
-            response: entry.response
-          }))
-        )
-      } else {
-        // 总结全失败：优先用基础模型成功答案，否则展示总结/基础模型的真实报错
-        finalOutput = majorityBaseAnswer
-          || formatModelOutputs(summaryResults)
-          || formatModelOutputs(results)
-          || '错误: 未获得任何模型响应'
+        } catch (error) {
+          if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
+            throw createCancelledRequestError()
+          }
+          const errText = `错误: ${formatModelCallError(error, '总结失败')}`
+          console.error(`[总结失败] ${model.displayName}:`, error)
+          const l = requestLogs.value.find(l => l.id === requestId)
+          if (l?.multiModelResponses) {
+            const entry = l.multiModelResponses.find(r => r.modelId === summaryKey)
+            if (entry) { entry.isLoading = false; entry.response = errText }
+          }
+          return {
+            model,
+            response: errText,
+            success: false
+          }
+        }
       }
-
-      const finalReasoning = successfulSummaryEntries.length === 1
-        ? getRequestReasoningForBackend(requestId, `summary:${successfulSummaryEntries[0].model.id}`)
-        : successfulSummaryEntries.length === 0 && successfulModels.length === 1
-          ? getRequestReasoningForBackend(requestId, successfulModels[0].id)
-          : ''
-      if (!isRequestCancelled(requestId)) {
-        await sendModelResponseToBackend(
-          requestId,
-          finalOutput,
-          successfulSummaryEntries.length > 0 || !!majorityBaseAnswer,
-          finalReasoning
-        )
-      }
-    } else {
-      // 无总结模型：成功则返回成功内容；全部失败则返回各模型真实报错
-      finalOutput = successfulModels.length > 0
-        ? formatModelOutputs(successfulBaseEntries)
-        : (formatModelOutputs(results) || '错误: 未获得任何模型响应')
-      const finalReasoning = successfulModels.length === 1
-        ? getRequestReasoningForBackend(requestId, successfulModels[0].id)
-        : ''
-      if (!isRequestCancelled(requestId)) {
-        await sendModelResponseToBackend(
-          requestId,
-          finalOutput,
-          successfulResults.length > 0,
-          finalReasoning
-        )
-      }
-    }
+    })
+    if (isRequestCancelled(requestId)) return
+    finalOutput = outcome.response
+    const sourceKey = outcome.source
+      ? (outcome.fromSummary ? 'summary:' : '') + outcome.source.model.id
+      : undefined
+    await sendModelResponseToBackend(
+      requestId, finalOutput, outcome.success,
+      sourceKey ? getRequestReasoningForBackend(requestId, sourceKey) : ''
+    )
   } catch (error) {
     if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
       return

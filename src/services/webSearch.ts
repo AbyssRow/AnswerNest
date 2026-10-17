@@ -23,8 +23,6 @@ export interface WebSearchConfig {
   timeoutSec: number
   /** 搜索词最多多少字 */
   maxQueryChars: number
-  /** 只在答题模型的答案不一致时才搜索（省额度；答案一致说明题不难）。搜索要等答题结束后才开始，会多等一会儿 */
-  onlyWhenDisagree: boolean
   /** 搜索词要不要带选项：never 只搜题目；auto 题目太短（不足 shortTitleChars 字）才补选项；always 总是带 */
   optionsMode: SearchOptionsMode
   /** 逗号或换行分隔的域名，例如 baidu.com, zhihu.com */
@@ -46,7 +44,6 @@ export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
   maxCharsPerResult: 2000,
   timeoutSec: 20,
   maxQueryChars: 300,
-  onlyWhenDisagree: false,
   optionsMode: 'auto',
   includeDomains: '',
   excludeDomains: '',
@@ -82,7 +79,6 @@ export function normalizeWebSearchConfig(input?: Partial<WebSearchConfig> | null
     maxCharsPerResult: clampInt(raw.maxCharsPerResult, 200, 10000, d.maxCharsPerResult),
     timeoutSec: clampInt(raw.timeoutSec, 3, 120, d.timeoutSec),
     maxQueryChars: clampInt(raw.maxQueryChars, 20, 500, d.maxQueryChars),
-    onlyWhenDisagree: raw.onlyWhenDisagree === true,
     optionsMode: raw.optionsMode ==='never' || raw.optionsMode === 'always' ? raw.optionsMode : 'auto',
     includeDomains: str(raw.includeDomains, d.includeDomains),
     excludeDomains: str(raw.excludeDomains, d.excludeDomains),
@@ -302,6 +298,7 @@ export async function runWebSearch(
     ({ ok: false, items: [], text: `错误: ${message}`, query, tookMs: Date.now() - started })
   if (!query) return fail('题目内容为空，已跳过搜索')
   if (!config.apiKey) return fail('没有填写搜索服务的 API Key')
+  if (options.signal?.aborted) return fail('搜索已取消')
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), config.timeoutSec * 1000)
@@ -310,6 +307,7 @@ export async function runWebSearch(
   try {
     const request = buildSearchRequest(config, query)
     const send = options.fetchImpl ?? await defaultFetch(config)
+    if (controller.signal.aborted) throw new DOMException('aborted', 'AbortError')
     const response = await send(request.url, {
       method: 'POST',
       headers: request.headers,
@@ -320,9 +318,10 @@ export async function runWebSearch(
     if (!response.ok) return fail(searchErrorMessage(response.status, bodyText, config.provider))
     let json: unknown
     try { json = JSON.parse(bodyText) } catch { return fail('搜索服务返回的不是 JSON') }
-    const items = config.provider === 'exa'
+    const parsedItems = config.provider === 'exa'
       ? parseExaResponse(json, config.maxCharsPerResult)
       : parseFirecrawlResponse(json, config.maxCharsPerResult)
+    const items = parsedItems.slice(0, config.maxResults)
     if (!items.length) return fail('没有搜到相关结果')
     return { ok: true, items, text: formatSearchContext(items), query, tookMs: Date.now() - started }
   } catch (error) {
@@ -336,50 +335,7 @@ export async function runWebSearch(
   }
 }
 
-/**
- * 取出一个模型回答里「最终答案」部分用来比较：优先取最后一个 {"answer": "…"}，没有就取最后一行。
- * 去掉空白、标点、选项字母前缀（A. / B、）并转小写，所以 "B. 传动角" 和 "传动角" 算同一个答案。
- */
-export function extractComparableAnswer(response: string): string {
-  const text = (response || '').replace(/```[a-z]*\n?|```/gi, '')
-  let answer = ''
-  for (const match of text.matchAll(/"answer"\s*:\s*"((?:[^"\\]|\\.)*)"/g)) answer = match[1]
-  if (!answer) {
-    const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
-    answer = lines[lines.length - 1] || ''
-  }
-  // 多选题的多个答案用 # 连接，顺序不同不算不同
-  return answer
-    .replace(/\\n/g, ' ')
-    .split('#')
-    .map(normalizeAnswerPart)
-    .filter(Boolean)
-    .sort()
-    .join('#')
-}
-
-// 判断题的各种说法：同一个意思不算不一致
-const JUDGE_TRUE = new Set(['正确', '对', '是', '真', '对的', '正确的', '是的', '√', '✓', '✔', '☑', 'true', 't', 'yes', 'y', 'right', 'correct'])
-const JUDGE_FALSE = new Set(['错误', '错', '否', '假', '不对', '不正确', '不是', '错的', '错误的', '不对的', '×', '✗', '✘', '✕', '❌', 'false', 'f', 'no', 'n', 'wrong', 'incorrect'])
-
-function normalizeAnswerPart(part: string): string {
-  const base = part.normalize('NFKC').trim()
-    // 「答案：对」「最终答案是对」去掉引导语；只有「答案：是」时这个「是」就是答案本身，保留
-    .replace(/^(?:最终)?答案\s*[:：]?\s*(?:[是为]\s*(?=\S))?/, '')
-    .replace(/^[\s:：,，]+/, '')
-    .replace(/^\s*[A-Za-z][.、:：)）]\s*/, '')
-    .trim()
-  const key = base.replace(/[\s。.!！,，;；、]+$/g, '').toLowerCase()
-  if (JUDGE_TRUE.has(key)) return 'judge:true'
-  if (JUDGE_FALSE.has(key)) return 'judge:false'
-  return base.replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase()
-}
-
-/** 至少两个有内容的回答，并且最终答案不全相同 */
-export function answersDisagree(responses: string[]): boolean {
-  const answers = responses.map(extractComparableAnswer).filter(Boolean)
-  return answers.length >= 2 && new Set(answers).size > 1
-}
+export { extractComparableAnswer, answersDisagree } from '../utils/answerConsensus'
 
 /** 总结提示词里搜索资料那一段 */
 export function buildSearchContextBlock(text: string): string {

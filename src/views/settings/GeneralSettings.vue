@@ -141,10 +141,10 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">搜索服务</h3>
-        <p class="setting-description">Firecrawl 注册后有免费积分；Exa 按次计费。Key 只保存在本机，只会发给对应的搜索服务。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchKeyUrl">获取 API Key</a></p>
+        <p class="setting-description">Firecrawl 注册后有免费积分；Exa 按次计费；DeepSeek 使用 DeepSeek 开放平台的 API Key，每千次成功搜索 5 元，没搜到不计费。Key 只保存在本机，只会发给当前选择的搜索服务，切换服务后要换成对应的 Key。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchKeyUrl">获取 API Key</a></p>
       </div>
       <div class="setting-control">
-        <select class="form-input ws-select" :value="settings.webSearch.provider" @change="settings.webSearch.provider = ($event.target as HTMLSelectElement).value as 'firecrawl' | 'exa'">
+        <select class="form-input ws-select" :value="settings.webSearch.provider" @change="settings.webSearch.provider = ($event.target as HTMLSelectElement).value as WebSearchProvider">
           <option v-for="p in WEB_SEARCH_PROVIDERS" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
       </div>
@@ -252,7 +252,7 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">不搜这些网站</h3>
-        <p class="setting-description">格式同上。Firecrawl 的“只搜”和“不搜”不能同时用，同时填了只用“只搜”。</p>
+        <p class="setting-description">格式同上。Firecrawl 的“只搜”和“不搜”不能同时用，同时填了只用“只搜”。DeepSeek 会把域名写成 site: / -site: 搜索语法，和题目一起不超过 128 字，域名太多时不过滤。</p>
       </div>
       <div class="setting-control">
         <input type="text" class="form-input ws-wide" :value="settings.webSearch.excludeDomains" placeholder="可留空"
@@ -293,6 +293,18 @@
       </div>
     </div>
     </template>
+    <div v-if="settings.webSearch.provider === 'deepseek'" class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">DeepSeek 返回内容</h3>
+        <p class="setting-description">摘要：每条约 600–800 字、专门给模型阅读的摘要，够用且更快；正文：额外返回网页正文（再按“每条结果最多字数”截断），不额外计费。DeepSeek 的搜索词最多 128 字，更长的题目会被截断。</p>
+      </div>
+      <div class="setting-control">
+        <select class="form-input ws-select" :value="settings.webSearch.deepseekContent" @change="settings.webSearch.deepseekContent = ($event.target as HTMLSelectElement).value as 'summary' | 'content'">
+          <option value="summary">摘要</option>
+          <option value="content">正文</option>
+        </select>
+      </div>
+    </div>
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">服务地址</h3>
@@ -393,7 +405,7 @@ import { useSettingsManager } from '../../composables/useSettingsManager'
 
 import { useTheme } from '../../composables/useTheme'
 import { environmentDetector } from '../../services/environmentDetector'
-import { EXA_SEARCH_TYPES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch } from '../../services/webSearch'
+import { EXA_SEARCH_TYPES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, type WebSearchProvider } from '../../services/webSearch'
 import ThemeSwitch from './GeneralSettings/ThemeSwitch.vue'
 import Toggle from '../../components/Toggle.vue'
 import FolderPickerDialog from '../../components/FolderPickerDialog.vue'

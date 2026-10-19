@@ -1,14 +1,17 @@
-// 总结时联网搜索：直接调用 Firecrawl / Exa 的搜索接口，把结果整理成一段文字放进总结模型的上下文。
+// 总结时联网搜索：直接调用 Firecrawl / Exa / DeepSeek 的搜索接口，把结果整理成一段文字放进总结模型的上下文。
 // 搜索只在总结阶段做一次（不是每个模型一次），失败不影响答题，只是没有搜索资料。
 import { validateProxyUrl } from './providerTransport'
 
-export type WebSearchProvider = 'firecrawl' | 'exa'
+export type WebSearchProvider = 'firecrawl' | 'exa' | 'deepseek'
 export type ExaSearchType = 'auto' | 'fast' | 'instant' | 'deep-lite' | 'deep'
 export type ExaContentMode = 'highlights' | 'text'
+export type DeepSeekContentMode = 'summary' | 'content'
 export type SearchOptionsMode = 'never' | 'auto' | 'always'
 
 /** auto 模式下，题目不足这么多字就补上选项 */
 export const SHORT_TITLE_CHARS = 12
+/** DeepSeek 的 query 最多 128 个字符（site: 等搜索语法也写在 query 里） */
+export const DEEPSEEK_MAX_QUERY_CHARS = 128
 
 export interface WebSearchConfig {
   enabled: boolean
@@ -33,6 +36,8 @@ export interface WebSearchConfig {
   exaContent: ExaContentMode
   /** Firecrawl：是否抓取网页正文（更准但每条多耗积分）；关闭则只用搜索结果自带的摘要 */
   firecrawlScrape: boolean
+  /** DeepSeek：summary 只用接口给模型准备的摘要（约 600–800 字）；content 额外请求网页正文 */
+  deepseekContent: DeepSeekContentMode
 }
 
 export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
@@ -50,13 +55,17 @@ export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
   proxyUrl: '',
   exaType: 'auto',
   exaContent: 'highlights',
-  firecrawlScrape: true
+  firecrawlScrape: true,
+  deepseekContent: 'summary'
 }
 
 export const WEB_SEARCH_PROVIDERS: { id: WebSearchProvider; name: string; baseUrl: string; keyUrl: string }[] = [
   { id: 'firecrawl', name: 'Firecrawl', baseUrl: 'https://api.firecrawl.dev', keyUrl: 'https://www.firecrawl.dev/app/api-keys' },
-  { id: 'exa', name: 'Exa', baseUrl: 'https://api.exa.ai', keyUrl: 'https://dashboard.exa.ai/api-keys' }
+  { id: 'exa', name: 'Exa', baseUrl: 'https://api.exa.ai', keyUrl: 'https://dashboard.exa.ai/api-keys' },
+  { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', keyUrl: 'https://platform.deepseek.com/api_keys' }
 ]
+
+const providerName = (provider: WebSearchProvider) => WEB_SEARCH_PROVIDERS.find(p => p.id === provider)!.name
 
 export const EXA_SEARCH_TYPES: ExaSearchType[] = ['auto', 'fast', 'instant', 'deep-lite', 'deep']
 
@@ -72,7 +81,7 @@ export function normalizeWebSearchConfig(input?: Partial<WebSearchConfig> | null
   const str = (v: unknown, fallback: string) => (typeof v === 'string' ? v : fallback)
   return {
     enabled: raw.enabled === true,
-    provider: raw.provider === 'exa' ? 'exa' : 'firecrawl',
+    provider: raw.provider === 'exa' || raw.provider === 'deepseek' ? raw.provider : 'firecrawl',
     apiKey: str(raw.apiKey, d.apiKey).trim(),
     baseUrl: str(raw.baseUrl, d.baseUrl).trim(),
     maxResults: clampInt(raw.maxResults, 1, 10, d.maxResults),
@@ -85,7 +94,8 @@ export function normalizeWebSearchConfig(input?: Partial<WebSearchConfig> | null
     proxyUrl: str(raw.proxyUrl, d.proxyUrl).trim(),
     exaType: EXA_SEARCH_TYPES.includes(raw.exaType as ExaSearchType) ? raw.exaType as ExaSearchType : d.exaType,
     exaContent: raw.exaContent === 'text' ? 'text' : 'highlights',
-    firecrawlScrape: raw.firecrawlScrape !== false
+    firecrawlScrape: raw.firecrawlScrape !== false,
+    deepseekContent: raw.deepseekContent === 'content' ? 'content' : 'summary'
   }
 }
 
@@ -211,8 +221,33 @@ export function buildExaRequest(config: WebSearchConfig, query: string): SearchH
   }
 }
 
+/** 按 Unicode 字符截断，不会切开表情这类两个码元的字符 */
+const takeChars = (text: string, max: number): string => {
+  const chars = Array.from(text)
+  return chars.length > max ? chars.slice(0, max).join('').trimEnd() : text
+}
+
+export function buildDeepSeekRequest(config: WebSearchConfig, query: string): SearchHttpRequest {
+  // DeepSeek 没有域名过滤参数，改用搜索语法写进 query：多个 site: 用 OR 连接，多个 -site: 用空格分隔
+  const include = parseDomainList(config.includeDomains).map(d => `site:${d}`).join(' OR ')
+  const exclude = parseDomainList(config.excludeDomains).map(d => `-site:${d}`).join(' ')
+  const filters = [include, exclude].filter(Boolean).join(' ')
+  const room = DEEPSEEK_MAX_QUERY_CHARS - Array.from(filters).length - 1
+  // 域名太多会把题目挤没，这时宁可不过滤
+  const text = filters && room >= 20 ? `${takeChars(query, room)} ${filters}` : takeChars(query, DEEPSEEK_MAX_QUERY_CHARS)
+  const body: Record<string, unknown> = { query: text, count: config.maxResults }
+  if (config.deepseekContent === 'content') body.need_content = true
+  return {
+    url: `${resolveBaseUrl(config)}/v1/tools/search`,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+    body
+  }
+}
+
 export function buildSearchRequest(config: WebSearchConfig, query: string): SearchHttpRequest {
-  return config.provider === 'exa' ? buildExaRequest(config, query) : buildFirecrawlRequest(config, query)
+  if (config.provider === 'exa') return buildExaRequest(config, query)
+  if (config.provider === 'deepseek') return buildDeepSeekRequest(config, query)
+  return buildFirecrawlRequest(config, query)
 }
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -245,6 +280,22 @@ export function parseExaResponse(json: any, maxChars: number): SearchResultItem[
   }).filter(item => item.content || item.title)
 }
 
+export function parseDeepSeekResponse(json: any, maxChars: number): SearchResultItem[] {
+  const list: any[] = Array.isArray(json?.results) ? json.results : []
+  return list.map(item => ({
+    title: collapse(asString(item?.title)),
+    url: asString(item?.url),
+    // 没要正文时 content 是空串，用给模型准备的 summary；再没有才用给页面展示的 snippet
+    content: clip(asString(item?.content) || asString(item?.summary) || asString(item?.snippet), maxChars)
+  })).filter(item => item.content || item.title)
+}
+
+export function parseSearchResponse(provider: WebSearchProvider, json: unknown, maxChars: number): SearchResultItem[] {
+  if (provider === 'exa') return parseExaResponse(json, maxChars)
+  if (provider === 'deepseek') return parseDeepSeekResponse(json, maxChars)
+  return parseFirecrawlResponse(json, maxChars)
+}
+
 /** 从服务返回里取一句能看懂的错误 */
 export function searchErrorMessage(status: number, bodyText: string, provider: WebSearchProvider): string {
   let detail = ''
@@ -253,10 +304,10 @@ export function searchErrorMessage(status: number, bodyText: string, provider: W
     detail = asString(json?.error) || asString(json?.message) || asString(json?.error?.message)
   } catch { detail = bodyText.slice(0, 200) }
   detail = collapse(detail).slice(0, 200)
-  const name = provider === 'exa' ? 'Exa' : 'Firecrawl'
+  const name = providerName(provider)
   const hint = status === 401 || status === 403 ? '（检查 API Key 是否正确）'
-    : status === 402 ? '（额度或积分不足）'
-    : status === 429 ? '（请求太频繁或额度用完）'
+    : status === 402 ? (provider === 'deepseek' ? '（账户余额不足）' : '（额度或积分不足）')
+    : status === 429 ? (provider === 'deepseek' ? '（超过每秒 5 次的搜索频率限制）' : '（请求太频繁或额度用完）')
     : ''
   return `${name} 返回 ${status}${hint}${detail ? '：' + detail : ''}`
 }
@@ -293,7 +344,9 @@ export async function runWebSearch(
   options: { fetchImpl?: FetchLike; signal?: AbortSignal } = {}
 ): Promise<WebSearchOutcome> {
   const started = Date.now()
-  const query = buildSearchQuery(prompt, config)
+  const query = buildSearchQuery(prompt, config.provider === 'deepseek'
+    ? { ...config, maxQueryChars: Math.min(config.maxQueryChars, DEEPSEEK_MAX_QUERY_CHARS) }
+    : config)
   const fail = (message: string): WebSearchOutcome =>
     ({ ok: false, items: [], text: `错误: ${message}`, query, tookMs: Date.now() - started })
   if (!query) return fail('题目内容为空，已跳过搜索')
@@ -318,10 +371,7 @@ export async function runWebSearch(
     if (!response.ok) return fail(searchErrorMessage(response.status, bodyText, config.provider))
     let json: unknown
     try { json = JSON.parse(bodyText) } catch { return fail('搜索服务返回的不是 JSON') }
-    const parsedItems = config.provider === 'exa'
-      ? parseExaResponse(json, config.maxCharsPerResult)
-      : parseFirecrawlResponse(json, config.maxCharsPerResult)
-    const items = parsedItems.slice(0, config.maxResults)
+    const items = parseSearchResponse(config.provider, json, config.maxCharsPerResult).slice(0, config.maxResults)
     if (!items.length) return fail('没有搜到相关结果')
     return { ok: true, items, text: formatSearchContext(items), query, tookMs: Date.now() - started }
   } catch (error) {

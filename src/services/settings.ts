@@ -17,7 +17,7 @@ export interface AppSettings {
   modelResponseTimeout: number
   // 模型失败自动重试次数（仅单模型 / 总结模型 / 视觉模型）；0 表示不重试
   modelRetryCount: number
-  // 总结时联网搜索（Firecrawl / Exa）
+  // 总结时联网搜索（Firecrawl / Exa / DeepSeek）
   webSearch: WebSearchConfig
 
   
@@ -350,7 +350,7 @@ class SettingsManager {
       autoAddToQuestionBank: '自动将AI返回的题目添加到本地题库',
       modelResponseTimeout: '文本模型最长响应时间（秒）',
       modelRetryCount: '模型失败自动重试次数',
-      webSearch: '总结时联网搜索（Firecrawl / Exa）',
+      webSearch: '总结时联网搜索（Firecrawl / Exa / DeepSeek）',
 
       network: '网络配置设置',
       windowSize: '窗口大小',

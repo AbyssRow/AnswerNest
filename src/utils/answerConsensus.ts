@@ -7,9 +7,20 @@ export interface AnswerContext {
 
 export function answerContextFromPrompt(prompt: string): AnswerContext {
   return {
-    kind: prompt.match(/【题目类型：([^】]+)】/)?.[1] || '',
+    // No recognised type tag (unknown type, URL prompts) means "unknown", not a strict non-choice type.
+    kind: prompt.match(/【题目类型：([^】]+)】/)?.[1] || undefined,
     options: prompt.match(/【选项】\s*\n([\s\S]*?)(?:\n\s*请作答|$)/)?.[1]?.trim() || ''
   }
+}
+
+/** Numbers, booleans and arrays are valid answers too: {"answer": 3}, {"answer": true}, {"answer": ["A", "B"]}. */
+function answerValueText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value) && value.every(item => typeof item === 'string' || typeof item === 'number')) {
+    return value.map(item => String(item).trim()).join('###')
+  }
+  return undefined
 }
 
 /** Read the final answer field, including escaped quotes/Unicode, without comparing model reasoning. */
@@ -17,13 +28,17 @@ export function extractFinalAnswer(response: string): string {
   const text = (response || '').replace(/```[a-z]*\n?|```/gi, '').trim()
   if (/^(?:错误|error)\s*[:：]/i.test(text)) return ''
   let answer: string | undefined
-  for (const match of text.matchAll(/"(?:answer|anwser)"\s*:\s*("(?:[^"\\]|\\.)*")/g)) {
-    try { answer = JSON.parse(match[1]) } catch { /* ignore malformed fields */ }
+  const field = /"(?:answer|anwser)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|\[(?:[^[\]"]|"(?:[^"\\]|\\.)*")*\])/g
+  for (const match of text.matchAll(field)) {
+    try { answer = answerValueText(JSON.parse(match[1])) ?? answer } catch { /* ignore malformed fields */ }
   }
   if (answer !== undefined) return answer.trim()
   if (/^[{[]/.test(text)) return ''
   const labelled = [...text.matchAll(/(?:最终(?:答案)?|答案|answer)\s*[:：]\s*([^\n]+)/gi)]
-  return labelled.length ? labelled[labelled.length - 1][1].trim() : text
+  if (labelled.length) return labelled[labelled.length - 1][1].trim()
+  // Unstructured reply: the conclusion is the last line; the whole text would make every reply "disagree".
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
+  return lines[lines.length - 1] || ''
 }
 
 const JUDGE_TRUE = new Set(['正确', '对', '是', '真', '对的', '正确的', '是的', '√', '✓', '✔', '☑', 'true', 't', 'yes', 'y', 'right', 'correct'])
@@ -80,6 +95,7 @@ export function mostFrequentAnswer<T extends { response: string }>(entries: T[],
 export function finalAnswerJson(response: string, context: AnswerContext): string {
   const answer = normalizeAnswerAgainstOptions(extractFinalAnswer(response), context.options)
   const key = extractComparableAnswer(response, context)
-  const judgement = context.kind === undefined || /判断/.test(context.kind)
+  // Synonyms still count as agreement for unknown types, but only real 判断题 have their wording rewritten.
+  const judgement = /判断/.test(context.kind ?? '')
   return JSON.stringify({ answer: judgement && key === 'judge:true' ? '正确' : judgement && key === 'judge:false' ? '错误' : answer })
 }

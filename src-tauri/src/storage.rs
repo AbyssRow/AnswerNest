@@ -23,8 +23,10 @@ fn windows_data_dir(local: Option<std::ffi::OsString>, profile: Option<std::ffi:
 
 pub(crate) fn read_config_file(name: &str) -> Result<String, String> {
     let target = data_dir().join(name);
-    let legacy = std::env::current_exe().map_err(|error| error.to_string())?
-        .parent().ok_or("无法定位旧配置目录")?.join(name);
+    // 定位不到 exe 目录只是无法迁移旧配置，不能连已有的配置也读不出来；空路径不是文件，会被跳过
+    let legacy = std::env::current_exe().ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .unwrap_or_default();
     read_config_from(&target, &legacy)
 }
 

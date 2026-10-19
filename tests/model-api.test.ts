@@ -575,6 +575,56 @@ test('web search: results of both services are parsed into readable context', as
   assert.equal(formatSearchContext([...fc, ...exa].slice(0, 2)), '[1] 标题 一\nhttps://a.com\n正文正文正文正文正文正文…\n\n[2] 二\nhttps://b.com\n只有摘要')
   assert.deepEqual(parseExaResponse({}, 10), [])
 })
+test('web search: DeepSeek request, 128-char query limit, domain syntax and response parsing', async () => {
+  const { buildDeepSeekRequest, parseDeepSeekResponse, normalizeWebSearchConfig, runWebSearch } = await import('../src/services/webSearch')
+  const base = normalizeWebSearchConfig({ enabled: true, apiKey: 'sk', provider: 'deepseek', maxResults: 4 })
+  assert.equal(base.provider, 'deepseek')
+  assert.equal(base.deepseekContent, 'summary')
+  const ds = buildDeepSeekRequest(base, '问题')
+  assert.equal(ds.url, 'https://api.deepseek.com/v1/tools/search')
+  assert.equal(ds.headers.Authorization, 'Bearer sk')
+  assert.deepEqual(ds.body, { query: '问题', count: 4 })
+  assert.equal(buildDeepSeekRequest({ ...base, deepseekContent: 'content', baseUrl: 'https://ds.example.com/' }, 'q').url, 'https://ds.example.com/v1/tools/search')
+  assert.equal(buildDeepSeekRequest({ ...base, deepseekContent: 'content' }, 'q').body.need_content, true)
+
+  const filtered = buildDeepSeekRequest({ ...base, includeDomains: 'zhihu.com, https://baike.baidu.com/x', excludeDomains: 'csdn.net' }, '水的化学式')
+  assert.equal(filtered.body.query, '水的化学式 site:zhihu.com OR site:baike.baidu.com -site:csdn.net')
+  const long = '题'.repeat(200)
+  const longFiltered = String(buildDeepSeekRequest({ ...base, includeDomains: 'zhihu.com' }, long).body.query)
+  assert.equal(Array.from(longFiltered).length, 128)
+  assert.ok(longFiltered.endsWith(' site:zhihu.com'))
+  // 域名多到题目剩不下 20 字时放弃过滤，保证搜索词里有题目
+  const manyDomains = Array.from({ length: 12 }, (_, i) => `site${i}.example.com`).join(',')
+  assert.equal(buildDeepSeekRequest({ ...base, includeDomains: manyDomains }, long).body.query, '题'.repeat(128))
+  // 按 Unicode 字符截断，不切开表情
+  assert.equal(Array.from(String(buildDeepSeekRequest(base, '😀'.repeat(130)).body.query)).length, 128)
+
+  const parsed = parseDeepSeekResponse({ results: [
+    { title: ' 北京 ', url: 'https://a.com', snippet: '短', summary: '摘要内容', content: '' },
+    { title: '正文', url: 'https://b.com', snippet: '短', summary: '摘要', content: '正文'.repeat(10) },
+    { title: '', url: 'https://c.com', snippet: '只有片段' },
+    { url: 'https://empty.com' }
+  ] }, 8)
+  assert.deepEqual(parsed.map(item => item.content), ['摘要内容', '正文正文正文正文…', '只有片段'])
+  assert.equal(parsed[0].title, '北京')
+  assert.deepEqual(parseDeepSeekResponse({ results: [] }, 10), [])
+
+  let seen: any
+  const prompt = `【题目】\n${'很长的题目'.repeat(40)}\n\n请作答`
+  const ok = await runWebSearch(base, prompt, { fetchImpl: async (url, init) => {
+    seen = { url, init }
+    return new Response(JSON.stringify({ results: [{ title: 'T', url: 'https://x.com', summary: 'S' }] }), { status: 200 })
+  } })
+  assert.equal(ok.ok, true)
+  assert.equal(seen.url, 'https://api.deepseek.com/v1/tools/search')
+  assert.equal(Array.from(ok.query).length, 128)
+  assert.equal(JSON.parse(seen.init.body).query, ok.query)
+  const noBalance = await runWebSearch(base, prompt, { fetchImpl: async () => new Response(JSON.stringify({ error: { message: 'Insufficient Balance', type: 'payment_required', param: null, code: 'insufficient_balance' } }), { status: 402 }) })
+  assert.match(noBalance.text, /^错误: DeepSeek 返回 402（账户余额不足）：Insufficient Balance/)
+  const limited = await runWebSearch(base, prompt, { fetchImpl: async () => new Response('{"error":{"message":"rate limited"}}', { status: 429 }) })
+  assert.match(limited.text, /^错误: DeepSeek 返回 429.*5 次/)
+  assert.match((await runWebSearch(base, prompt, { fetchImpl: async () => new Response('{"results":[]}', { status: 200 }) })).text, /没有搜到/)
+})
 test('web search: runWebSearch reports success, failures and timeouts without throwing', async () => {
   const { runWebSearch, normalizeWebSearchConfig } = await import('../src/services/webSearch')
   const prompt = '【题目】\n中国的首都是哪个城市\n\n请作答'
@@ -815,6 +865,31 @@ test('answer comparison: preserve numeric signs, punctuation, case and fill-in o
   const options = answerContextFromPrompt(workflowQuestion)
   assert.equal(answersDisagree([reply('A'), reply('北京')], options), false)
   assert.equal(answersDisagree([reply('AB'), reply('上海###北京')], { ...options, kind: '多选题' }), false)
+})
+
+test('answer comparison: non-string answers, unstructured replies and unknown question types', async () => {
+  const { finalAnswerJson } = await import('../src/utils/answerConsensus')
+  assert.equal(extractFinalAnswer('{"answer": 3}'), '3')
+  assert.equal(extractFinalAnswer('{"answer": -2.5}'), '-2.5')
+  assert.equal(extractFinalAnswer('{"answer": true}'), 'true')
+  assert.equal(extractFinalAnswer('{"answer": ["北京", "上海"]}'), '北京###上海')
+  assert.equal(extractFinalAnswer('{"answer": ["含]括号", "乙"]}'), '含]括号###乙')
+  assert.equal(extractFinalAnswer('{"answer": {"x": 1}}'), '')
+  assert.equal(finalAnswerJson('{"answer": 3}', {}), '{"answer":"3"}')
+  assert.equal(finalAnswerJson('{"answer": false}', { kind: '判断题' }), '{"answer":"错误"}')
+
+  // 没有 JSON 和「答案：」时只取最后一行，推理过程不同不算分歧
+  assert.equal(extractFinalAnswer('第一行分析\n\n第二行结论 B  \n'), '第二行结论 B')
+  assert.equal(answersDisagree(['推理甲……\n答案是B', '完全不同的推理\n答案是B']), false)
+
+  // 后端识别不了题型时只写「题目类型字段」，URL 题目没有题型：按未知题型宽松比较
+  const unknown = answerContextFromPrompt('【题目类型字段：其它】\n【题目】\n题\n【选项】\nA. 甲\nC. 丙\n\n请作答')
+  assert.equal(unknown.kind, undefined)
+  assert.equal(answersDisagree(['{"answer":"对"}', '{"answer":"正确"}'], unknown), false)
+  assert.equal(answersDisagree(['{"answer":"甲###丙"}', '{"answer":"丙###甲"}'], unknown), false)
+  // 只有明确的判断题才把「是」改写成「正确」
+  assert.equal(finalAnswerJson('{"answer":"是"}', unknown), '{"answer":"是"}')
+  assert.equal(finalAnswerJson('{"answer":"是"}', { kind: '判断题' }), '{"answer":"正确"}')
 })
 
 test('web search: already cancelled requests do not fetch, and result count is bounded', async () => {

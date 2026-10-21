@@ -13,6 +13,12 @@ export const SHORT_TITLE_CHARS = 12
 /** DeepSeek 的 query 最多 128 个字符（site: 等搜索语法也写在 query 里） */
 export const DEEPSEEK_MAX_QUERY_CHARS = 128
 
+export interface WebSearchConnection {
+  apiKey: string
+  baseUrl: string
+  proxyUrl: string
+}
+
 export interface WebSearchConfig {
   enabled: boolean
   provider: WebSearchProvider
@@ -32,6 +38,8 @@ export interface WebSearchConfig {
   includeDomains: string
   excludeDomains: string
   proxyUrl: string
+  /** 各搜索服务独立的连接配置；顶层字段保留给当前服务和旧版配置兼容。 */
+  providerSettings?: Partial<Record<WebSearchProvider, WebSearchConnection>>
   exaType: ExaSearchType
   exaContent: ExaContentMode
   /** Firecrawl：是否抓取网页正文（更准但每条多耗积分）；关闭则只用搜索结果自带的摘要 */
@@ -53,6 +61,7 @@ export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConfig = {
   includeDomains: '',
   excludeDomains: '',
   proxyUrl: '',
+  providerSettings: {},
   exaType: 'auto',
   exaContent: 'highlights',
   firecrawlScrape: true,
@@ -79,11 +88,26 @@ export function normalizeWebSearchConfig(input?: Partial<WebSearchConfig> | null
   const raw = (input && typeof input === 'object' ? input : {}) as Partial<WebSearchConfig>
   const d = DEFAULT_WEB_SEARCH_CONFIG
   const str = (v: unknown, fallback: string) => (typeof v === 'string' ? v : fallback)
+  const provider = raw.provider === 'exa' || raw.provider === 'deepseek' ? raw.provider : 'firecrawl'
+  const providerSettings: Partial<Record<WebSearchProvider, WebSearchConnection>> = {}
+  for (const { id } of WEB_SEARCH_PROVIDERS) {
+    const saved = raw.providerSettings?.[id]
+    providerSettings[id] = {
+      apiKey: str(saved?.apiKey, '').trim(),
+      baseUrl: str(saved?.baseUrl, '').trim(),
+      proxyUrl: str(saved?.proxyUrl, '').trim()
+    }
+  }
+  // 旧配置只迁移到原来选中的服务；当前编辑的字段优先，包括主动清空的值。
+  const connection = providerSettings[provider]!
+  connection.apiKey = str(raw.apiKey, connection.apiKey).trim()
+  connection.baseUrl = str(raw.baseUrl, connection.baseUrl).trim()
+  connection.proxyUrl = str(raw.proxyUrl, connection.proxyUrl).trim()
   return {
     enabled: raw.enabled === true,
-    provider: raw.provider === 'exa' || raw.provider === 'deepseek' ? raw.provider : 'firecrawl',
-    apiKey: str(raw.apiKey, d.apiKey).trim(),
-    baseUrl: str(raw.baseUrl, d.baseUrl).trim(),
+    provider,
+    ...connection,
+    providerSettings,
     maxResults: clampInt(raw.maxResults, 1, 10, d.maxResults),
     maxCharsPerResult: clampInt(raw.maxCharsPerResult, 200, 10000, d.maxCharsPerResult),
     timeoutSec: clampInt(raw.timeoutSec, 3, 120, d.timeoutSec),
@@ -91,12 +115,17 @@ export function normalizeWebSearchConfig(input?: Partial<WebSearchConfig> | null
     optionsMode: raw.optionsMode ==='never' || raw.optionsMode === 'always' ? raw.optionsMode : 'auto',
     includeDomains: str(raw.includeDomains, d.includeDomains),
     excludeDomains: str(raw.excludeDomains, d.excludeDomains),
-    proxyUrl: str(raw.proxyUrl, d.proxyUrl).trim(),
     exaType: EXA_SEARCH_TYPES.includes(raw.exaType as ExaSearchType) ? raw.exaType as ExaSearchType : d.exaType,
     exaContent: raw.exaContent === 'text' ? 'text' : 'highlights',
     firecrawlScrape: raw.firecrawlScrape !== false,
     deepseekContent: raw.deepseekContent === 'content' ? 'content' : 'summary'
   }
+}
+
+/** 先保存当前服务，再恢复目标服务，避免将其它服务的密钥发送给它。 */
+export function switchWebSearchProvider(config: WebSearchConfig, provider: WebSearchProvider): WebSearchConfig {
+  const current = normalizeWebSearchConfig(config)
+  return normalizeWebSearchConfig({ ...current, provider, ...current.providerSettings![provider]! })
 }
 
 export function webSearchReady(config: WebSearchConfig): boolean {

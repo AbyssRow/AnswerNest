@@ -31,12 +31,12 @@
       "icons/icon.png"
     ],
     "macOS": {
-      "minimumSystemVersion": "10.13",
+      "minimumSystemVersion": "10.15",
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": "AnswerNest",
       "entitlements": null,
-      "signingIdentity": null
+      "signingIdentity": "-"
     },
     "windows": {
       "wix": {

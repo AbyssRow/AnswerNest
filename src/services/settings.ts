@@ -174,8 +174,9 @@ class SettingsManager {
    * 保存设置到本地存储及用户数据目录的 config.json
    */
   private saveSettings(): Promise<void> {
+    const snapshot = { ...this.settings, webSearch: normalizeWebSearchConfig(this.settings.webSearch) }
     try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(this.settings))
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(snapshot))
       this.notifyListeners()
     } catch (error) {
       console.error('保存设置失败:', error)
@@ -183,7 +184,7 @@ class SettingsManager {
     }
     // 异步写入配置文件
     if (environmentDetector.isTauriEnvironment(true)) {
-      const content = JSON.stringify(this.settings, null, 2)
+      const content = JSON.stringify(snapshot, null, 2)
       this.pendingFileSave = this.pendingFileSave.catch(() => {}).then(async () => {
         const { invoke } = await import('@tauri-apps/api/core')
         await invoke('write_config', { content })
@@ -239,14 +240,16 @@ class SettingsManager {
    * 设置特定设置项
    */
   set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
-    this.settings[key] = value
+    if (key === 'webSearch') this.settings.webSearch = normalizeWebSearchConfig(value as WebSearchConfig)
+    else this.settings[key] = value
   }
 
   /**
    * 批量更新设置
    */
   update(newSettings: Partial<AppSettings>): void {
-    Object.assign(this.settings, newSettings)
+    Object.assign(this.settings, newSettings, newSettings.webSearch
+      ? { webSearch: normalizeWebSearchConfig(newSettings.webSearch) } : {})
   }
 
   /**
@@ -292,7 +295,7 @@ class SettingsManager {
    * 导出设置为JSON
    */
   export(): string {
-    return JSON.stringify(this.settings, null, 2)
+    return JSON.stringify({ ...this.settings, webSearch: normalizeWebSearchConfig(this.settings.webSearch) }, null, 2)
   }
 
   /**

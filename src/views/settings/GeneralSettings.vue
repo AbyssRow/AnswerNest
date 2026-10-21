@@ -141,10 +141,10 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">搜索服务</h3>
-        <p class="setting-description">Firecrawl 注册后有免费积分；Exa 按次计费；DeepSeek 使用 DeepSeek 开放平台的 API Key，每千次成功搜索 5 元，没搜到不计费。Key 只保存在本机，只会发给当前选择的搜索服务，切换服务后要换成对应的 Key。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchKeyUrl">获取 API Key</a></p>
+        <p class="setting-description">Firecrawl 注册后有免费积分；Exa 按次计费；DeepSeek 使用 DeepSeek 开放平台的 API Key。各服务的 Key、服务地址和代理分别保存在本机，切换时自动恢复。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchKeyUrl">获取 API Key</a></p>
       </div>
       <div class="setting-control">
-        <select class="form-input ws-select" :value="settings.webSearch.provider" @change="settings.webSearch.provider = ($event.target as HTMLSelectElement).value as WebSearchProvider">
+        <select class="form-input ws-select" :value="settings.webSearch.provider" @change="changeWebSearchProvider(($event.target as HTMLSelectElement).value as WebSearchProvider)">
           <option v-for="p in WEB_SEARCH_PROVIDERS" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
       </div>
@@ -405,7 +405,7 @@ import { useSettingsManager } from '../../composables/useSettingsManager'
 
 import { useTheme } from '../../composables/useTheme'
 import { environmentDetector } from '../../services/environmentDetector'
-import { EXA_SEARCH_TYPES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, type WebSearchProvider } from '../../services/webSearch'
+import { EXA_SEARCH_TYPES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, switchWebSearchProvider, type WebSearchProvider } from '../../services/webSearch'
 import ThemeSwitch from './GeneralSettings/ThemeSwitch.vue'
 import Toggle from '../../components/Toggle.vue'
 import FolderPickerDialog from '../../components/FolderPickerDialog.vue'
@@ -485,6 +485,10 @@ const handleSettingChange = (key: keyof import('../../services/settings').AppSet
 const showWebSearchAdvanced = ref(false)
 const webSearchTest = ref('')
 const webSearchTesting = ref(false)
+const changeWebSearchProvider = (provider: WebSearchProvider) => {
+  settings.value.webSearch = switchWebSearchProvider(settings.value.webSearch, provider)
+  webSearchTest.value = ''
+}
 const webSearchKeyUrl = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.id === settings.value.webSearch.provider)?.keyUrl || '#')
 const openWebSearchKeyUrl = async () => {
   const url = webSearchKeyUrl.value

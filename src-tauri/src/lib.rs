@@ -190,6 +190,7 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     #[cfg(target_os = "macos")]
     {
         if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
             let _ = window.show();
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
             let _ = window.set_focus();
@@ -385,7 +386,7 @@ pub fn run() {
                 .resizable(true)
                 .decorations(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .build();
+                .build()?;
                 
             #[cfg(not(target_os = "macos"))]
             let _main = {
@@ -502,6 +503,13 @@ pub fn run() {
             println!("✅ 应用启动完成，主窗口已创建，其他窗口按需创建");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // 隐藏到菜单栏后，点击 Dock 图标也应能重新打开主窗口。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+        });
 }

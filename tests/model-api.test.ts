@@ -13,7 +13,7 @@ import { batchStatusLabel, canDownloadResults, endpointForModel } from '../src/s
 import { runAnswerWorkflow } from '../src/services/answerWorkflow'
 import { answerContextFromPrompt, answersDisagree, extractFinalAnswer } from '../src/utils/answerConsensus'
 import { buildAnswerChatMessages } from '../src/utils/answerFewShot'
-import { normalizeWebSearchConfig, runWebSearch } from '../src/services/webSearch'
+import { buildSearchRequest, normalizeWebSearchConfig, runWebSearch, switchWebSearchProvider } from '../src/services/webSearch'
 
 const platform: any = { id: 'p1', baseUrl: 'https://api.openai.com/v1', apiKey: 'test-key', models: [] }
 const model: any = { id: 'm1', modelId: 'gpt-4.1-mini', apiProtocol: 'openai-chat', maxTokens: 2048, temperature: 0, topP: 0.8 }
@@ -558,6 +558,34 @@ test('web search: config from a settings file is clamped and defaulted', async (
   assert.equal(webSearchReady({ ...messy, apiKey: '' }), false)
   assert.equal(webSearchReady({ ...messy, enabled: false }), false)
 })
+test('web search: provider credentials, endpoints and proxies survive switching and restart independently', () => {
+  let config = normalizeWebSearchConfig({ enabled: true, provider: 'exa', apiKey: ' exa-key ', baseUrl: 'https://exa.example', proxyUrl: 'http://localhost:8080' })
+  config = switchWebSearchProvider(config, 'deepseek')
+  assert.deepEqual([config.apiKey, config.baseUrl, config.proxyUrl], ['', '', ''])
+  config.apiKey = 'deepseek-key'
+  config.baseUrl = 'https://deepseek.example'
+  config = switchWebSearchProvider(config, 'firecrawl')
+  assert.equal(config.apiKey, '')
+  config.apiKey = 'firecrawl-key'
+  config = normalizeWebSearchConfig(JSON.parse(JSON.stringify(normalizeWebSearchConfig(config))))
+  const firecrawl = buildSearchRequest(config, 'question')
+  assert.equal(firecrawl.headers.Authorization, 'Bearer firecrawl-key')
+  config = switchWebSearchProvider(config, 'exa')
+  assert.deepEqual([config.apiKey, config.baseUrl, config.proxyUrl], ['exa-key', 'https://exa.example', 'http://localhost:8080'])
+  const exa = buildSearchRequest(config, 'question')
+  assert.equal(exa.headers['x-api-key'], 'exa-key')
+  assert.equal(exa.url, 'https://exa.example/search')
+  config = switchWebSearchProvider(config, 'deepseek')
+  assert.deepEqual([config.apiKey, config.baseUrl, config.proxyUrl], ['deepseek-key', 'https://deepseek.example', ''])
+  assert.equal(buildSearchRequest(config, 'question').headers.Authorization, 'Bearer deepseek-key')
+  // 清空不能从旧的快照中恢复；其余服务不受影响。
+  config.apiKey = ''
+  config = switchWebSearchProvider(switchWebSearchProvider(config, 'exa'), 'deepseek')
+  assert.equal(config.apiKey, '')
+  const restored = normalizeWebSearchConfig({ provider: 'exa', providerSettings: config.providerSettings })
+  assert.equal(restored.apiKey, 'exa-key')
+})
+
 test('web search: results of both services are parsed into readable context', async () => {
   const { parseFirecrawlResponse, parseExaResponse, formatSearchContext } = await import('../src/services/webSearch')
   const fc = parseFirecrawlResponse({ success: true, data: { web: [

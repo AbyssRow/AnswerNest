@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const localTools = fileURLToPath(new URL("../.toolchains/", import.meta.url));
 const cargoName = process.platform === "win32" ? "cargo.exe" : "cargo";
@@ -24,10 +25,16 @@ if (!fs.existsSync(cargoExe)) {
 process.env.PATH = `${cargoBin}${path.delimiter}${process.env.PATH || ""}`;
 
 const args = process.argv.slice(2);
-const child = spawn("tauri", args, {
+const require = createRequire(import.meta.url);
+const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
+const child = spawn(process.execPath, [tauriCli, ...args], {
   stdio: "inherit",
-  shell: true,
   env: process.env,
+});
+
+child.on("error", (error) => {
+  console.error(`[run-tauri] ${error.message}`);
+  process.exitCode = 1;
 });
 
 child.on("exit", (code, signal) => {

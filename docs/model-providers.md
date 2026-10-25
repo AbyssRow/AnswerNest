@@ -129,29 +129,3 @@ Exa 在 [2026-10-19 的 3.0 更新](https://exa.ai/blog/exa-3)中新增了低成
 OCS 5.2.3 默认开启「图片题优化」，会将图片转为 Base64 放进 `images`，题干对应位置改为 `[图片1]` 等占位符。关闭优化或某张图片转换失败时，题干／选项可能仍有图片链接，软件会自行下载；当前对接配置同时支持这两种情况。来源：[OCS 脚本](https://cdn.ocsjs.com/ocs.user.js)。
 
 多图题需全部图片加载成功后才调用模型。链接下载失败会最多尝试 3 次，间隔 250 / 500 毫秒，已成功的图片不会重复下载，Base64 图片直接使用。准备阶段最多等待 30 秒（模型超时设置更短时跟随设置），也可随请求取消；重试后仍缺图才报错。原图使用高细节模式发送；这项检查不保证模型的看图理解和推理始终正确。
-
-## 验证
-
-```sh
-npm ci --ignore-scripts --allow-remote=all
-npm run test:model-api
-npm run build
-```
-
-`--allow-remote=all` 仅在新版 npm 禁止锁文件中的远程 tarball URL 时需要。
-
-本工作区的 Rust/Cargo 安装在 `.toolchains`（已加入 Git 忽略），未修改系统 PATH。后续在仓库根目录的 PowerShell 中使用：
-
-```powershell
-$env:RUSTUP_HOME = Join-Path $PWD '.toolchains/rustup'
-$env:CARGO_HOME = Join-Path $PWD '.toolchains/cargo'
-$env:PATH = "$env:CARGO_HOME/bin;$env:PATH"
-cargo check --manifest-path src-tauri/Cargo.toml --locked
-npm run tauri -- build --debug --no-bundle
-```
-
-这些环境变量仅影响当前 PowerShell 会话。`npm run tauri` 也会自动识别项目内工具链，显式设置的 `CARGO_HOME` 优先。Windows 编译还需安装 Visual Studio C++ 构建工具。
-
-协议测试运行经压缩的产物，包含 URL / 鉴权 / 参数映射、SSE 分片和错误、工具续接、表单校验以及三个 Batch 协议的请求生命周期，均使用模拟上游。浏览器冒烟验证覆盖表单保存与校验、Batch 提交 / 刷新 / 下载 / 记录重开，HTTP 和原生文件操作使用测试替身。
-
-没有使用真实付费 API 密钥进行联调，也未进行原生 HTTP 代理连接测试。已使用项目内 Rust 工具链及 Visual Studio 2026 通过 `cargo check --locked` 和 `npm run tauri -- build --debug --no-bundle`，生成 `src-tauri/target/debug/answernest.exe`；这是调试构建，未生成签名安装包。Rust 端为现有 reqwest 启用了 socks feature，HTTP 插件的代理配置沿用其官方 [ClientOptions.proxy](https://v2.tauri.app/reference/javascript/http/) 接口。

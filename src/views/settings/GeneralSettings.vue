@@ -1,5 +1,28 @@
 <template>
   <div class="general-settings">
+    <div class="network-group configuration-transfer">
+      <div class="group-title">配置导入导出</div>
+      <div class="setting-item">
+        <div class="setting-info">
+          <h3 class="setting-title">迁移到另一台电脑</h3>
+          <p class="setting-description">包含所有平台与模型、模型选择、API Key、代理、搜索服务和常规设置。文件含明文密钥，请妥善保管。不包含题库、窗口位置和题库保存文件夹。</p>
+        </div>
+        <div class="setting-control transfer-actions">
+          <button class="folder-action-btn select-folder-btn" :disabled="transferBusy" @click="exportConfigFile">导出配置</button>
+          <button class="folder-action-btn select-folder-btn" :disabled="transferBusy" @click="configFileInput?.click()">导入配置</button>
+          <input ref="configFileInput" type="file" accept=".json,application/json" hidden :disabled="transferBusy" @change="previewConfigFile" />
+        </div>
+      </div>
+      <div v-if="pendingConfig" class="transfer-preview">
+        <p>{{ pendingConfigName }}：{{ pendingConfig.models.platforms.length }} 个平台、{{ pendingConfig.models.platforms.reduce((count, platform) => count + platform.models.length, 0) }} 个模型。</p>
+        <p>确认后覆盖文件中的模型、搜索和常规设置，本机题库保持不变。若题库服务正在运行，导入后请停止并重新启动服务。</p>
+        <div class="transfer-actions">
+          <button class="folder-action-btn select-folder-btn" :disabled="transferBusy" @click="confirmConfigImport">{{ transferBusy ? '保存中…' : '确认导入' }}</button>
+          <button class="folder-action-btn" :disabled="transferBusy" @click="pendingConfig = null; transferNotice = '已取消导入'">取消</button>
+        </div>
+      </div>
+      <p v-if="transferNotice" class="setting-description transfer-notice" :class="{ 'ws-test-error': transferFailed }" role="status">{{ transferNotice }}</p>
+    </div>
     <div class="network-group">
       <div class="group-title">显示设置</div>
     <div class="setting-item">
@@ -393,6 +416,8 @@ import { useSettingsManager } from '../../composables/useSettingsManager'
 import { useTheme } from '../../composables/useTheme'
 import { environmentDetector } from '../../services/environmentDetector'
 import { EXA_SEARCH_MODES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, switchWebSearchProvider, type ExaSearchType, type WebSearchProvider } from '../../services/webSearch'
+import { CONFIGURATION_MAX_BYTES, exportConfiguration, importConfiguration, parseConfigurationBackup, type ConfigurationBackup } from '../../services/configurationBackup'
+import { version as appVersion } from '../../../package.json'
 import ThemeSwitch from './GeneralSettings/ThemeSwitch.vue'
 import Toggle from '../../components/Toggle.vue'
 import FolderPickerDialog from '../../components/FolderPickerDialog.vue'
@@ -400,6 +425,78 @@ import FolderPickerDialog from '../../components/FolderPickerDialog.vue'
 const emit = defineEmits<{
   'open-question-folder': [folderId: number]
 }>()
+
+const configFileInput = ref<HTMLInputElement | null>(null)
+const transferBusy = ref(false)
+const transferFailed = ref(false)
+const transferNotice = ref('')
+const pendingConfig = ref<ConfigurationBackup | null>(null)
+const pendingConfigName = ref('')
+
+const exportConfigFile = async () => {
+  transferBusy.value = true
+  transferFailed.value = false
+  transferNotice.value = ''
+  try {
+    const content = await exportConfiguration(appVersion)
+    const filename = `AnswerNest-config-${new Date().toISOString().slice(0, 10)}.json`
+    if (environmentDetector.isTauriEnvironment()) {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const path = await save({ title: '导出 AnswerNest 配置', defaultPath: filename, filters: [{ name: 'JSON 配置', extensions: ['json'] }] })
+      if (!path) return
+      const { writeFile } = await import('@tauri-apps/plugin-fs')
+      await writeFile(path, new TextEncoder().encode(content))
+    } else {
+      const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }
+    transferNotice.value = '配置已导出，可在另一台电脑的「导入配置」中恢复。'
+  } catch (error) {
+    transferFailed.value = true
+    transferNotice.value = `导出失败：${error instanceof Error ? error.message : String(error)}`
+  } finally { transferBusy.value = false }
+}
+
+const previewConfigFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  pendingConfig.value = null
+  transferNotice.value = ''
+  transferFailed.value = false
+  transferBusy.value = true
+  try {
+    if (file.size > CONFIGURATION_MAX_BYTES) throw new Error('配置文件不能超过 10 MB')
+    pendingConfig.value = parseConfigurationBackup(await file.text())
+    pendingConfigName.value = file.name
+  } catch (error) {
+    transferFailed.value = true
+    transferNotice.value = error instanceof Error ? error.message : String(error)
+  } finally { transferBusy.value = false }
+}
+
+const confirmConfigImport = async () => {
+  if (!pendingConfig.value || transferBusy.value) return
+  transferBusy.value = true
+  transferFailed.value = false
+  transferNotice.value = ''
+  try {
+    await importConfiguration(pendingConfig.value)
+    syncLocalSettings()
+    await setTheme(settings.value.theme)
+    webSearchTest.value = ''
+    pendingConfig.value = null
+    transferNotice.value = '配置已导入并保存，模型和搜索设置已生效。若题库服务正在运行，请停止并重新启动服务。'
+  } catch (error) {
+    transferFailed.value = true
+    transferNotice.value = error instanceof Error ? error.message : String(error)
+  } finally { transferBusy.value = false }
+}
 
 // 打开缓存文件夹
 const openingCache = ref(false)
@@ -582,6 +679,29 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.transfer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.configuration-transfer .setting-item {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.transfer-preview {
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.transfer-preview p { margin: 0 0 10px; line-height: 1.6; }
+.transfer-notice { margin-top: 12px; }
+
 .setting-item {
   display: flex;
   align-items: flex-start;

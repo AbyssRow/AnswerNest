@@ -2,6 +2,7 @@ import { reactive, watch, computed } from 'vue'
 import { normalizeApiProtocol } from './modelProtocol'
 import { inferSupportsVision, modelSupportsVision } from '../utils/questionAttachments'
 import { adoptRemotePlatforms } from './remoteCatalogMigration'
+import { environmentDetector } from './environmentDetector'
 
 // AI 平台配置接口
 export interface AIPlatform {
@@ -224,6 +225,7 @@ class ModelConfigManager {
   private restoringFromFile = false
   private needsFileRestore = true
   private pendingFileSave: Promise<void> = Promise.resolve()
+  private initialLoad: Promise<void> = Promise.resolve()
 
   constructor() {
     this.settings = reactive(this.loadSettings())
@@ -234,10 +236,19 @@ class ModelConfigManager {
     this.setupAutoSave()
     if (this.needsFileRestore) {
       this.restoringFromFile = true
-      void this.restoreFromFile().finally(() => {
+      this.initialLoad = this.restoreFromFile().finally(() => {
         this.restoringFromFile = false
       })
     }
+  }
+
+  async ready(): Promise<void> { await this.initialLoad }
+
+  /** 手动保存需要等待落盘，并向调用方报告写入失败。 */
+  async save(): Promise<void> {
+    await this.ready()
+    this.saveSettings()
+    await this.pendingFileSave
   }
 
   /**
@@ -464,7 +475,7 @@ class ModelConfigManager {
    * 异步写入 model_config.json
    */
   private async saveToFile(): Promise<void> {
-    if (this.restoringFromFile) return
+    if (this.restoringFromFile || !environmentDetector.isTauriEnvironment()) return
     const content = JSON.stringify(this.settings)
     try {
       this.pendingFileSave = this.pendingFileSave.catch(() => {}).then(async () => {

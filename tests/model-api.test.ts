@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import './functional-regressions.test'
+import './configuration-backup.test'
 import { buildPresetProcessModelJsCode } from '../src/services/modelProtocol'
 import { providerEndpoint, providerHeaders, providerClientOptions, validateProxyUrl } from '../src/services/providerTransport'
 import { BatchApi, batchRowsFromPrompts, parseBatchJsonl } from '../src/services/batchApi'

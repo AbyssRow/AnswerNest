@@ -123,13 +123,17 @@ class SettingsManager {
   private settings: AppSettings
   private listeners: Set<(settings: AppSettings) => void> = new Set()
   private pendingFileSave: Promise<void> = Promise.resolve()
+  private initialLoad: Promise<void>
 
   constructor() {
     this.settings = reactive(this.loadSettings())
     this.setupAutoSave()
     // 异步从文件加载设置并合并
-    this.loadFromFile()
+    this.initialLoad = this.loadFromFile()
   }
+
+  /** 配置迁移前先等启动时的磁盘恢复完成。 */
+  async ready(): Promise<void> { await this.initialLoad }
 
   /**
    * 从本地存储加载设置（同步，作为初始值）

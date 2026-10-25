@@ -443,7 +443,7 @@ pub fn run() {
                     _ => {}
                 });
 
-            // macOS 菜单栏用 Template 图（黑底镂空字），系统会按菜单栏着色为白/黑
+            // macOS 菜单栏使用 AnswerNest「鸟巢 + 勾选」透明模板图，系统按深浅色自动着色。
             #[cfg(target_os = "macos")]
             {
                 match tauri::image::Image::from_bytes(include_bytes!("../icons/trayTemplate.png")) {

@@ -1,6 +1,7 @@
 import type { AppSettings } from './settings'
 import type { ModelSettings } from './modelConfig'
 import { normalizeWebSearchConfig } from './webSearch'
+import { normalizeModelNames } from '../utils/modelIdentity'
 
 export const CONFIGURATION_FORMAT = 'answernest-configuration'
 export const CONFIGURATION_MAX_BYTES = 10 * 1024 * 1024
@@ -87,7 +88,9 @@ function validateModels(value: unknown): asserts value is ModelSettings {
     fields(platform, ['enabled', 'isRemote'], 'boolean', '平台')
     if (platform.customHeaders !== undefined && (!object(platform.customHeaders) || Object.values(platform.customHeaders).some(value => typeof value !== 'string'))) fail('平台请求头')
     for (const model of platform.models) {
-      if (!object(model) || typeof model.id !== 'string' || !model.id.trim() || typeof model.name !== 'string' || !model.name.trim()) fail('模型')
+      if (!object(model)) fail('模型')
+      Object.assign(model, normalizeModelNames(model))
+      if (typeof model.id !== 'string' || !model.id.trim() || typeof model.name !== 'string' || !model.name.trim()) fail('模型')
       if (modelIds.has(model.id)) fail('重复的模型 ID')
       modelIds.add(model.id)
       fields(model, ['modelId', 'displayName', 'platformId', 'jsCode', 'description', 'apiProtocol', 'upstream', 'thinkingMode', 'thinkingEffort', 'thinkingOffResponsesEffort'], 'string', '模型')

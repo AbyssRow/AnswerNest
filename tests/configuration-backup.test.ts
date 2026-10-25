@@ -46,6 +46,30 @@ test('configuration backup preserves keys, model selections, parameters and inde
   assert.equal(source.settings.network.bindAddress, '192.0.2.1')
 })
 
+test('legacy models without name can be exported without changing model IDs, selections or source data', () => {
+  const source = example()
+  const legacy = source.models.platforms[0].models[0] as any
+  delete legacy.name
+  legacy.displayName = '旧版模型别名'
+  legacy.modelId = 'fixture-runtime-model'
+  const before = JSON.stringify(source)
+  const restored = parseConfigurationBackup(createConfigurationBackup(source.settings as any, source.models as any, '1.4.1'))
+  const model = restored.models.platforms[0].models[0]
+  assert.equal(model.name, 'fixture-runtime-model')
+  assert.equal(model.displayName, '旧版模型别名')
+  assert.equal(model.modelId, 'fixture-runtime-model')
+  assert.equal(model.id, 'model_1')
+  assert.equal(restored.models.platforms[0].apiKey, 'fixture-model-key')
+  assert.deepEqual(restored.models.selectedTextModels, ['model_1'])
+  assert.deepEqual(restored.models.selectedSummaryModels, ['model_1'])
+  assert.equal(JSON.stringify(source), before)
+  for (const name of [null, '', '  ']) {
+    legacy.name = name
+    delete legacy.modelId
+    assert.equal(parseConfigurationBackup(JSON.stringify(source)).models.platforms[0].models[0].name, '旧版模型别名')
+  }
+})
+
 test('configuration backup rejects malformed files and unsupported versions before import', () => {
   for (const text of ['', '{', 'null', '[]', '{"platforms":[]}']) assert.throws(() => parseConfigurationBackup(text), /配置/)
   assert.throws(() => parseConfigurationBackup(JSON.stringify({ ...example(), version: 2 })), /版本/)
@@ -57,6 +81,8 @@ test('configuration backup rejects malformed files and unsupported versions befo
     (b: any) => { b.settings.webSearch.providerSettings.deepseek.apiKey = {} },
     (b: any) => { b.models.platforms[0].models = {} },
     (b: any) => { b.models.platforms[0].apiKey = {} },
+    (b: any) => { b.models.platforms[0].models[0].name = {} },
+    (b: any) => { b.models.platforms[0].models[0].id = '' },
     (b: any) => { b.models.platforms.push(b.models.platforms[0]) },
     (b: any) => { b.models.platforms[0].models.push(b.models.platforms[0].models[0]) },
     (b: any) => { b.models.platforms[0].models[0].extraBody = [] },

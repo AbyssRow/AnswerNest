@@ -3,6 +3,7 @@ import { normalizeApiProtocol } from './modelProtocol'
 import { inferSupportsVision, modelSupportsVision } from '../utils/questionAttachments'
 import { adoptRemotePlatforms } from './remoteCatalogMigration'
 import { environmentDetector } from './environmentDetector'
+import { normalizeModelNames } from '../utils/modelIdentity'
 
 // AI 平台配置接口
 export interface AIPlatform {
@@ -132,9 +133,9 @@ const getPlatformApiKey = (platforms: AIPlatform[], preferredPlatform?: AIPlatfo
 
 const migrateStoredModel = (model: AIModel): AIModel => {
   const wasVision = model.category === 'vision'
-  const next: AIModel = wasVision || model.category === 'summary'
+  const next: AIModel = normalizeModelNames(wasVision || model.category === 'summary'
     ? { ...model, category: 'text' }
-    : model
+    : model)
   if (wasVision) next.supportsVision = true
   else if (next.supportsVision === undefined && inferSupportsVision(next)) next.supportsVision = true
   return next

@@ -51,36 +51,76 @@ AnswerNest 把原项目里依赖作者服务器、带推广性质的部分都去
 
 ## 系统要求
 
-- Windows 10 / 11 x64（当前 Release 已提供安装包）
-- macOS：项目最低部署版本配置为 10.15，已提供构建配置；尚待 Mac 实机打包与运行验证，当前 Release 暂无 macOS 安装包
+| 平台 | 系统版本 | 安装包架构 |
+| --- | --- | --- |
+| Windows | Windows 10 / 11 | x64 |
+| Intel Mac | macOS 10.15 及以上 | x64 |
+| Apple Silicon Mac（M 系列） | macOS 11 及以上 | ARM64（`aarch64`） |
+
+macOS 版本号为安装包的最低部署目标，较旧系统的兼容性仍需实测。Intel 版已通过 Mac 实机运行验证；ARM64 版已完成交叉编译、架构、签名与安装包校验，尚待 Apple Silicon 实机运行验证。
 
 ## 安装方法
 
-1. 从 [Releases](https://github.com/AbyssRow/AnswerNest/releases) 下载最新版本（也可自行克隆源码，用 `npm run tauri:build` 构建）
-2. 运行安装程序。安装包未经代码签名，Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」
-3. 运行软件
+前往 [最新 Release](https://github.com/AbyssRow/AnswerNest/releases/latest) 下载对应平台的安装包。当前版本为 **1.4.1**：
+
+| 平台 | 下载 |
+| --- | --- |
+| Windows x64 | [AnswerNest_1.4.1_x64-setup.exe](https://github.com/AbyssRow/AnswerNest/releases/download/v1.4.1/AnswerNest_1.4.1_x64-setup.exe) |
+| Intel Mac | [AnswerNest_1.4.1_x64.dmg](https://github.com/AbyssRow/AnswerNest/releases/download/v1.4.1/AnswerNest_1.4.1_x64.dmg) |
+| Apple Silicon Mac（M 系列） | [AnswerNest_1.4.1_aarch64.dmg](https://github.com/AbyssRow/AnswerNest/releases/download/v1.4.1/AnswerNest_1.4.1_aarch64.dmg) |
+
+Release 同时提供 [SHA256SUMS.txt](https://github.com/AbyssRow/AnswerNest/releases/download/v1.4.1/SHA256SUMS.txt)，可用于核对下载文件的 SHA-256。
+
+### Windows
+
+运行 `.exe` 安装程序，按提示完成安装。安装包未经代码签名，Windows 可能提示「未知发布者」，确认下载来源后可点「更多信息 → 仍要运行」。
+
+### macOS
+
+1. 在「关于本机」中查看芯片类型：Intel 下载 `x64.dmg`，Apple M 系列下载 `aarch64.dmg`
+2. 打开 `.dmg`，将 **AnswerNest.app** 拖入「应用程序」文件夹；升级时先退出正在运行的 AnswerNest，再替换应用
+3. 从「应用程序」启动 AnswerNest。关闭主窗口后，默认仍会在菜单栏运行，可通过菜单栏图标显示窗口或退出，也可以点击 Dock 图标恢复窗口
+
+macOS 安装包使用本地临时签名（ad-hoc），尚未进行 Apple Developer 签名和公证，首次打开可能出现开发者验证提示。替换应用不会清除下方列出的题库和配置目录。
 
 ### 在 Mac 上打包
 
-需在 macOS 上安装 Node.js（版本见 `.node-version`）、Rust 和 Xcode Command Line Tools。桌面构建前置依赖见 [Tauri 官方说明](https://v2.tauri.app/start/prerequisites/#macos)。
+需在 macOS 上安装 Node.js（版本见 [`.node-version`](.node-version)，可用 fnm 管理）、Rust 和 Xcode Command Line Tools。桌面构建前置依赖见 [Tauri 官方说明](https://v2.tauri.app/start/prerequisites/#macos)。
 
-在项目目录运行：
+获取源码并安装前端依赖：
 
 ```sh
-git pull --ff-only
+git clone https://github.com/AbyssRow/AnswerNest.git
+cd AnswerNest
 npm ci
-npm run tauri:build:mac
 ```
 
-命令生成 `.app` 和 `.dmg`，分别位于 `src-tauri/target/release/bundle/macos/` 和 `src-tauri/target/release/bundle/dmg/`。默认按当前 Mac 的架构构建；Apple Silicon 和 Intel 的安装包需要分别构建。当前采用本地临时签名，未配置 Apple Developer 签名和公证。
+按目标架构分别构建：
+
+```sh
+# Intel Mac
+rustup target add x86_64-apple-darwin
+npm run tauri:build:mac -- --target x86_64-apple-darwin
+
+# Apple Silicon Mac（包括从 Intel Mac 交叉编译）
+rustup target add aarch64-apple-darwin
+npm run tauri:build:mac -- --target aarch64-apple-darwin --config '{"bundle":{"macOS":{"minimumSystemVersion":"11.0"}}}'
+```
+
+`.app` 和 `.dmg` 分别生成在 `src-tauri/target/<目标架构>/release/bundle/macos/` 和 `src-tauri/target/<目标架构>/release/bundle/dmg/`。其中 `<目标架构>` 为 `x86_64-apple-darwin` 或 `aarch64-apple-darwin`。交叉编译不等于目标机器上的运行验证，发布前应在对应架构的 Mac 上测试。
 
 ### 数据和配置位置
 
-1.1.0 起，Windows 的题库和配置统一保存在 `%LOCALAPPDATA%\AnswerNest`。程序按当前用户的实际目录定位数据，不再拼接 `C:\Users\用户名`。备份时可复制该目录。
+| 平台 | 数据目录 |
+| --- | --- |
+| Windows（1.1.0 起） | `%LOCALAPPDATA%\AnswerNest` |
+| macOS | `~/.local/share/answernest` |
 
-升级后首次读取配置时，如果数据目录没有对应文件，会从程序同级目录复制旧的 `config.json` 和 `model_config.json`，保留原文件；数据目录已有的配置优先。模型配置包含你填写的 API Key。
+目录中包含题库 `airesponses.db`、常规配置 `config.json` 和模型配置 `model_config.json`。完整备份时，请先退出应用，再复制整个目录；只迁移配置可使用软件内的「配置导入导出」。配置文件包含你填写的 API Key，请妥善保管。
 
-### 从 ZError 迁移
+升级后首次读取配置时，如果数据目录没有对应文件，会从程序同级目录复制旧的 `config.json` 和 `model_config.json`，保留原文件；数据目录已有的配置优先。
+
+### Windows 从 ZError 迁移
 
 首次启动时，如果检测到旧版数据目录（`%LOCALAPPDATA%\ZError`），会自动把题库、设置和模型配置**复制**到 `%LOCALAPPDATA%\AnswerNest`，旧目录原样保留，不会被删除。
 

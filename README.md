@@ -45,13 +45,28 @@ AnswerNest 把原项目里依赖作者服务器、带推广性质的部分都去
 
 ## 系统要求
 
-- Windows 10 / 11
+- Windows 10 / 11 x64（当前 Release 已提供安装包）
+- macOS：项目最低部署版本配置为 10.15，已提供构建配置；尚待 Mac 实机打包与运行验证，当前 Release 暂无 macOS 安装包
 
 ## 安装方法
 
 1. 从 [Releases](https://github.com/AbyssRow/AnswerNest/releases) 下载最新版本（也可自行克隆源码，用 `npm run tauri:build` 构建）
 2. 运行安装程序。安装包未经代码签名，Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」
 3. 运行软件
+
+### 在 Mac 上打包
+
+需在 macOS 上安装 Node.js（版本见 `.node-version`）、Rust 和 Xcode Command Line Tools。桌面构建前置依赖见 [Tauri 官方说明](https://v2.tauri.app/start/prerequisites/#macos)。
+
+在项目目录运行：
+
+```sh
+git pull --ff-only
+npm ci
+npm run tauri:build:mac
+```
+
+命令生成 `.app` 和 `.dmg`，分别位于 `src-tauri/target/release/bundle/macos/` 和 `src-tauri/target/release/bundle/dmg/`。默认按当前 Mac 的架构构建；Apple Silicon 和 Intel 的安装包需要分别构建。当前采用本地临时签名，未配置 Apple Developer 签名和公证。
 
 ### 数据和配置位置
 

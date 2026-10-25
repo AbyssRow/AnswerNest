@@ -38,6 +38,57 @@ export const findFileUrls = (text: string): string[] =>
 export const questionHasImages = (text: string, extraImages?: string[]): boolean =>
   (extraImages || []).some(item => typeof item === 'string' && item.trim()) || findImageUrls(text).length > 0
 
+/** 等待原生下载时也响应取消；底层请求完成后的结果不再参与本次作答。 */
+export function waitForAttachment<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener('abort', abort)
+      reject(signal.reason ?? new DOMException('请求已取消', 'AbortError'))
+    }
+    if (signal.aborted) abort()
+    else signal.addEventListener('abort', abort, { once: true })
+    operation.then(value => {
+      signal.removeEventListener('abort', abort)
+      resolve(value)
+    }, error => {
+      signal.removeEventListener('abort', abort)
+      reject(error)
+    })
+  })
+}
+
+/** 失败的链接最多下载三次；已成功的图片保留，全部就绪后才作答。 */
+export async function loadQuestionImages(
+  urls: string[],
+  fetchImage: (url: string) => Promise<string>,
+  options: { signal?: AbortSignal; retryDelayMs?: number } = {}
+): Promise<string[]> {
+  const unique = [...new Set(urls.filter(Boolean))]
+  const images: string[] = []
+  const failed: number[] = []
+  for (const [index, url] of unique.entries()) {
+    options.signal?.throwIfAborted()
+    let data = url.startsWith('data:') ? url : ''
+    for (let attempt = 0; !data && attempt < 3; attempt++) {
+      options.signal?.throwIfAborted()
+      try {
+        data = await waitForAttachment(fetchImage(url), options.signal)
+      } catch {
+        options.signal?.throwIfAborted()
+      }
+      if (!data && attempt < 2) {
+        await waitForAttachment(new Promise<void>(resolve => setTimeout(resolve, (options.retryDelayMs ?? 250) * 2 ** attempt)), options.signal)
+      }
+    }
+    if (data) images.push(data)
+    else failed.push(index + 1)
+  }
+  options.signal?.throwIfAborted()
+  if (failed.length) throw new Error(`题目图片重试后仍未能全部加载（${failed.length}/${unique.length}，第 ${failed.join('、')} 张），请重试。`)
+  return images
+}
+
 const fileKind = (url: string): string => {
   const path = url.split('?')[0].toLowerCase()
   if (path.endsWith('.pdf')) return 'pdf'

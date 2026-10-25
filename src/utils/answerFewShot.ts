@@ -1,13 +1,12 @@
+import { isLongFormQuestion } from './answerNormalize'
+
 export type AnswerFewShotKind = 'single' | 'multiple' | 'judgement' | 'completion' | 'general'
 
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
 type FewShotPair = { user: string; assistant: string }
 
-const SYSTEM_RULES = `你是专业答题助手。最终只输出一行 JSON：{"answer":"答案正文"}。
-选择题 answer 必须是选项正文（与选项原文去掉 A./B. 后一致），禁止写 A/B/C/D，禁止写「B. 传动角」这种带字母前缀的形式。
-判断题 answer 只能是「正确」或「错误」。
-多选题多个答案用 ### 连接；填空题多空也用 ### 连接。`
+const SYSTEM_RULES = '你是专业答题助手。仅输出一个 JSON 对象：{"answer":"答案正文"}。'
 
 const SINGLE_SHOTS: FewShotPair[] = [
   {
@@ -21,19 +20,6 @@ C. 极力夹角
 
 请作答，并在最后输出答案 JSON：`,
     assistant: '{"answer":"传动角"}',
-  },
-  {
-    user: `【题目类型：单选题】
-【题目】
-The gerund of the verb "meet" is ____.
-【选项】
-A. meet
-B. meeted
-C. to meet
-D. meeting
-
-请作答，并在最后输出答案 JSON：`,
-    assistant: '{"answer":"meeting"}',
   },
 ]
 
@@ -62,14 +48,6 @@ const JUDGEMENT_SHOTS: FewShotPair[] = [
 请作答，并在最后输出答案 JSON：`,
     assistant: '{"answer":"正确"}',
   },
-  {
-    user: `【题目类型：判断题】
-【题目】
-纯净水的 pH 值一定等于 7。
-
-请作答，并在最后输出答案 JSON：`,
-    assistant: '{"answer":"错误"}',
-  },
 ]
 
 const COMPLETION_SHOTS: FewShotPair[] = [
@@ -84,12 +62,19 @@ const COMPLETION_SHOTS: FewShotPair[] = [
 ]
 
 const GENERAL_SHOTS: FewShotPair[] = [
-  SINGLE_SHOTS[0],
-  JUDGEMENT_SHOTS[0],
+  {
+    user: `【题目类型：问答题】
+【题目】
+（1）简述光合作用的作用。（2）说明它与呼吸作用的关系。
+
+请作答，并在最后输出答案 JSON：`,
+    assistant: JSON.stringify({ answer: '（1）光合作用利用光能将二氧化碳和水转化为有机物，并释放氧气。\n（2）光合作用储存能量，呼吸作用分解有机物并释放能量；二者在物质和能量转化中相互联系。' }),
+  },
 ]
 
 export const detectAnswerFewShotKind = (query: string): AnswerFewShotKind => {
-  const type = (query || '').match(/【题目类型：([^】]+)】/)?.[1] || ''
+  const type = (query || '').match(/【题目类型(?:字段)?：([^】]+)】/)?.[1] || ''
+  if (isLongFormQuestion(type)) return 'general'
   if (/多选/.test(type)) return 'multiple'
   if (/判断/.test(type)) return 'judgement'
   if (/填空/.test(type)) return 'completion'

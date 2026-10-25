@@ -559,7 +559,7 @@ test('web search: config from a settings file is clamped and defaulted', async (
   assert.equal(webSearchReady({ ...messy, enabled: false }), false)
 })
 test('web search: provider credentials, endpoints and proxies survive switching and restart independently', () => {
-  let config = normalizeWebSearchConfig({ enabled: true, provider: 'exa', apiKey: ' exa-key ', baseUrl: 'https://exa.example', proxyUrl: 'http://localhost:8080' })
+  let config = normalizeWebSearchConfig({ enabled: true, provider: 'exa', apiKey: ' exa-key ', baseUrl: 'https://exa.example', proxyUrl: 'http://localhost:8080', exaType: 'lite', exaContent: 'text' })
   config = switchWebSearchProvider(config, 'deepseek')
   assert.deepEqual([config.apiKey, config.baseUrl, config.proxyUrl], ['', '', ''])
   config.apiKey = 'deepseek-key'
@@ -575,6 +575,8 @@ test('web search: provider credentials, endpoints and proxies survive switching 
   const exa = buildSearchRequest(config, 'question')
   assert.equal(exa.headers['x-api-key'], 'exa-key')
   assert.equal(exa.url, 'https://exa.example/search')
+  assert.equal(exa.body.type, 'lite')
+  assert.deepEqual(exa.body.contents, { text: { maxCharacters: 2000 } })
   config = switchWebSearchProvider(config, 'deepseek')
   assert.deepEqual([config.apiKey, config.baseUrl, config.proxyUrl], ['deepseek-key', 'https://deepseek.example', ''])
   assert.equal(buildSearchRequest(config, 'question').headers.Authorization, 'Bearer deepseek-key')
@@ -584,6 +586,33 @@ test('web search: provider credentials, endpoints and proxies survive switching 
   assert.equal(config.apiKey, '')
   const restored = normalizeWebSearchConfig({ provider: 'exa', providerSettings: config.providerSettings })
   assert.equal(restored.apiKey, 'exa-key')
+})
+
+test('web search: saved Exa Lite settings send supported parameters with either content mode', async () => {
+  for (const exaContent of ['highlights', 'text'] as const) {
+    const saved = JSON.stringify({
+      enabled: true, provider: 'exa', apiKey: 'lite-key', exaType: 'lite', exaContent,
+      maxResults: 4, maxCharsPerResult: 600, timeoutSec: 5,
+      includeDomains: 'https://example.com/page', excludeDomains: 'excluded.example'
+    })
+    const config = normalizeWebSearchConfig(JSON.parse(saved))
+    assert.equal(config.exaType, 'lite')
+    const outcome = await runWebSearch(config, '中国的首都是哪个城市', { fetchImpl: async (url, init) => {
+      assert.equal(url, 'https://api.exa.ai/search')
+      assert.equal(new Headers(init.headers).get('x-api-key'), 'lite-key')
+      assert.deepEqual(JSON.parse(String(init.body)), {
+        query: '中国的首都是哪个城市', type: 'lite', numResults: 4,
+        contents: { [exaContent]: { maxCharacters: 600 } },
+        includeDomains: ['example.com'], excludeDomains: ['excluded.example']
+      })
+      return jsonResponse({ results: [{ title: '首都', url: 'https://example.com', [exaContent]: exaContent === 'text' ? '北京' : ['北京'] }] })
+    } })
+    assert.equal(outcome.ok, true, outcome.text)
+    assert.equal(outcome.items[0].content, '北京')
+  }
+  for (const exaType of ['auto', 'fast', 'instant', 'deep-lite', 'deep', 'deep-reasoning'] as const) {
+    assert.equal(normalizeWebSearchConfig({ exaType }).exaType, exaType)
+  }
 })
 
 test('web search: results of both services are parsed into readable context', async () => {
@@ -701,7 +730,7 @@ test('web search: answers only count as different when the final answers differ'
   assert.equal(answersDisagree([reply('传动角')]), false)
   assert.equal(answersDisagree(['', reply('传动角')]), false)
   assert.equal(answersDisagree([]), false)
-  assert.match(buildSearchContextBlock('[1] x'), /最终答案里不要出现链接和来源[\s\S]*\[1\] x$/)
+  assert.match(buildSearchContextBlock('[1] x'), /联网搜索资料（仅供核对，以原题为准）：\n\[1\] x$/)
 })
 test('web search: judgement answers with different wording are not a disagreement', async () => {
   const { extractComparableAnswer, answersDisagree } = await import('../src/services/webSearch')
@@ -918,6 +947,78 @@ test('answer comparison: non-string answers, unstructured replies and unknown qu
   // 只有明确的判断题才把「是」改写成「正确」
   assert.equal(finalAnswerJson('{"answer":"是"}', unknown), '{"answer":"是"}')
   assert.equal(finalAnswerJson('{"answer":"是"}', { kind: '判断题' }), '{"answer":"正确"}')
+})
+
+test('essay answers preserve subquestions, prose, arrays and code without blank separators', async () => {
+  const { finalAnswerJson } = await import('../src/utils/answerConsensus')
+  const { normalizeAnswerJsonContent } = await import('../src/utils/answerNormalize')
+  const context = answerContextFromPrompt('【题目类型：问答题】\n【题目】\n（1）解释甲。（2）解释乙。\n【选项】\nA. 这是补充材料\nB. 不是选择题选项\n\n请作答')
+  const answer = '（1）解释甲及原因。\n（2）解释乙及原因。'
+  assert.equal(extractFinalAnswer(JSON.stringify({ answer: ['（1）解释甲及原因。', '（2）解释乙及原因。'] }), context), answer)
+  assert.equal(extractFinalAnswer(`答案：\n${answer}`, context), answer)
+  assert.equal(extractFinalAnswer(answer, context), answer)
+  assert.equal(JSON.parse(finalAnswerJson(JSON.stringify({ answer: '（1）解释甲及原因。###（2）解释乙及原因。' }), context)).answer, answer)
+  const labelled = 'A. 先推导甲。\nB. 再说明乙。'
+  assert.equal(JSON.parse(normalizeAnswerJsonContent(JSON.stringify({ answer: labelled }), context.options, 'essay')).answer, labelled)
+  assert.equal(JSON.parse(finalAnswerJson(JSON.stringify({ answer: 'A' }), context)).answer, 'A')
+  assert.equal(answersDisagree([JSON.stringify({ answer }), JSON.stringify({ answer: '（2）解释乙及原因。\n（1）解释甲及原因。' })], context), true)
+  const code = '使用 `###` 字面量。\n```txt\n甲###乙\n```'
+  assert.equal(extractFinalAnswer(JSON.stringify({ answer: code }), context), code)
+  assert.equal(answerContextFromPrompt('【题目类型字段：short_answer】\n【题目】\n简述').kind, 'short_answer')
+  const messages = buildAnswerChatMessages('【题目类型：问答题】\n【题目】\n（1）解释甲。（2）解释乙。\n\n请作答')
+  assert.ok(messages[0].content.length < 60)
+  assert.doesNotMatch(messages[0].content, /不要|禁止/)
+  const examples = messages.filter(message => message.role === 'assistant').map(message => JSON.parse(message.content).answer)
+  assert.ok(examples.length > 0)
+  assert.ok(examples.every(example => example.includes('（1）') && example.includes('\n（2）') && !example.includes('###')))
+  // 多选和多空仍保持 OCS 所需的分隔符。
+  assert.equal(JSON.parse(finalAnswerJson('{"answer":["甲","乙"]}', { kind: '填空题' })).answer, '甲###乙')
+})
+
+test('essay workflow keeps all subanswers through direct submission and model summaries', async () => {
+  const query = '【题目类型：问答题】\n【题目】\n（1）解释甲。（2）解释乙。\n\n请作答'
+  const model = { displayName: '答题模型' }
+  const summary = { displayName: '总结模型' }
+  const first = { model, success: true, response: '{"answer":["（1）甲的解释。","（2）乙的解释。"]}' }
+  const direct = await runAnswerWorkflow({ query, answers: [Promise.resolve(first)], summaryModels: [], isCancelled: () => false, summarize: async () => { throw new Error('unexpected summary') } })
+  assert.equal(JSON.parse(direct.response).answer, '（1）甲的解释。\n（2）乙的解释。')
+  const result = await runAnswerWorkflow({
+    query, answers: [Promise.resolve(first), Promise.resolve({ ...first, response: '{"answer":"另一份答案"}' })],
+    summaryModels: [summary], isCancelled: () => false,
+    summarize: async (model, prompt) => {
+      assert.match(prompt, /问答题按小问编号/)
+      assert.match(prompt, /不用 ###/)
+      return { model, success: true, response: '{"answer":"（1）核对甲。###（2）核对乙。"}' }
+    }
+  })
+  assert.equal(result.fromSummary, true)
+  assert.equal(JSON.parse(result.response).answer, '（1）核对甲。\n（2）核对乙。')
+})
+
+test('essay workflow accepts bracketed numbering without accepting invalid structured answers', async () => {
+  const answer = '[1] 解释甲。\n[2] 解释乙。'
+  const context = { kind: '问答题' }
+  assert.equal(extractFinalAnswer(answer, context), answer)
+  assert.equal(extractFinalAnswer('{1, 2} 是一个集合。', context), '{1, 2} 是一个集合。')
+  for (const invalid of ['{"reasoning":"尚未作答"}', '{"answer":', '["甲","乙"]']) {
+    assert.equal(extractFinalAnswer(invalid, context), '')
+  }
+  const model = { displayName: '答题模型' }
+  const outcome = await runAnswerWorkflow({
+    query: '【题目类型：问答题】\n【题目】\n解释甲与乙。\n\n请作答：',
+    answers: [Promise.resolve({ model, success: true, response: answer })],
+    summaryModels: [], isCancelled: () => false,
+    summarize: async () => { throw new Error('unexpected summary') }
+  })
+  assert.equal(outcome.success, true)
+  assert.equal(JSON.parse(outcome.response).answer, answer)
+})
+
+test('essay code answers keep their fences and literal separators', async () => {
+  const code = '```python\nprint("甲###乙")\n```'
+  const context = { kind: '问答题' }
+  assert.equal(extractFinalAnswer(code, context), code)
+  assert.equal(extractFinalAnswer('```json\n{"answer":"甲###乙"}\n```', context), '甲\n乙')
 })
 
 test('web search: already cancelled requests do not fetch, and result count is bounded', async () => {

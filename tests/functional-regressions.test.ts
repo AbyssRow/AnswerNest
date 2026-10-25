@@ -3,6 +3,67 @@ import test from 'node:test'
 import * as XLSX from 'xlsx'
 import { parseQuestionTable } from '../src/utils/questionTable'
 import { highlightText } from '../src/utils/highlightText'
+import { loadQuestionImages, waitForAttachment } from '../src/utils/questionAttachments'
+
+test('image questions require every image and preserve attachment order', async () => {
+  const inline = 'data:image/png;base64,INLINE'
+  const fetched: string[] = []
+  const images = await loadQuestionImages([inline, 'https://example.com/b.png', inline, 'https://example.com/c.png'], async url => {
+    fetched.push(url)
+    return url.endsWith('b.png') ? 'data:image/png;base64,B' : 'data:image/png;base64,C'
+  })
+  assert.deepEqual(images, [inline, 'data:image/png;base64,B', 'data:image/png;base64,C'])
+  assert.deepEqual(fetched, ['https://example.com/b.png', 'https://example.com/c.png'])
+  await assert.rejects(loadQuestionImages([inline, 'https://example.com/missing.png'], async () => '', { retryDelayMs: 0 }), /未能全部加载（1\/2，第 2 张）/)
+  await assert.rejects(loadQuestionImages(['https://example.com/missing.png', inline], async () => { throw new Error('network error') }, { retryDelayMs: 0 }), /未能全部加载（1\/2，第 1 张）/)
+})
+
+test('image downloads retry failures without downloading successful images again', async () => {
+  const urls = ['https://example.com/ready.png', 'https://example.com/flaky.png']
+  const calls = new Map<string, number>()
+  const result = await loadQuestionImages(urls, async url => {
+    const attempt = (calls.get(url) ?? 0) + 1
+    calls.set(url, attempt)
+    if (url.endsWith('flaky.png')) {
+      if (attempt === 1) return ''
+      if (attempt === 2) throw new Error('temporary network error')
+    }
+    return `data:image/png;base64,${url.endsWith('ready.png') ? 'READY' : 'RECOVERED'}`
+  }, { retryDelayMs: 0 })
+  assert.deepEqual(result, ['data:image/png;base64,READY', 'data:image/png;base64,RECOVERED'])
+  assert.deepEqual([...calls.values()], [1, 3])
+  let attempts = 0
+  await assert.rejects(loadQuestionImages([urls[1]], async () => { attempts++; return '' }, { retryDelayMs: 0 }), /重试后仍未能全部加载/)
+  assert.equal(attempts, 3)
+})
+
+test('cancelled image downloads stop waiting and do not start retries', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  const pending = loadQuestionImages(['https://example.com/slow.png'], async () => {
+    calls++
+    return new Promise<string>(() => {})
+  }, { signal: controller.signal, retryDelayMs: 0 })
+  controller.abort(new DOMException('图片准备超时', 'TimeoutError'))
+  await assert.rejects(pending, /图片准备超时/)
+  assert.equal(calls, 1)
+  await assert.rejects(loadQuestionImages(['https://example.com/unused.png'], async () => {
+    calls++
+    return 'unexpected'
+  }, { signal: controller.signal }), /图片准备超时/)
+  assert.equal(calls, 1)
+})
+
+test('image preparation timeout also stops waiting for decoding and resizing', async () => {
+  const controller = new AbortController()
+  let finishDecode!: (value: string) => void
+  const decode = new Promise<string>(resolve => { finishDecode = resolve })
+  const pending = waitForAttachment(decode, controller.signal)
+  controller.abort(new DOMException('题目图片准备超时', 'TimeoutError'))
+  await assert.rejects(pending, /题目图片准备超时/)
+  finishDecode('late image')
+  assert.equal(await waitForAttachment(Promise.resolve('ready')), 'ready')
+})
 
 test('CSV import preserves commas, escaped quotes, multiline cells, zero and leading zeros', () => {
   const csv = '\ufeffID,题目,选项,答案,类型,创建时间\r\n1,"计算 1,2 的和\n并解释 ""原因""","A. 0\nB. 3","0",填空题,2026-10-17\r\n2,编号,,00123,填空题,\r\n'

@@ -126,7 +126,7 @@
     </div>
     </div>
 
-    <div class="network-group">
+    <div class="network-group web-search-group">
       <div class="group-title">联网搜索（总结时）</div>
     <div class="setting-item">
       <div class="setting-info">
@@ -141,7 +141,7 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">搜索服务</h3>
-        <p class="setting-description">Firecrawl 注册后有免费积分；Exa 按次计费；DeepSeek 使用 DeepSeek 开放平台的 API Key。各服务的 Key、服务地址和代理分别保存在本机，切换时自动恢复。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchKeyUrl">获取 API Key</a></p>
+        <p class="setting-description">各服务的 Key、服务地址和代理分别保存在本机，切换时自动恢复。下方仅显示当前搜索服务的专属参数。<a :href="webSearchKeyUrl" @click.prevent="openWebSearchUrl(webSearchKeyUrl)">获取 API Key</a></p>
       </div>
       <div class="setting-control">
         <select class="form-input ws-select" :value="settings.webSearch.provider" @change="changeWebSearchProvider(($event.target as HTMLSelectElement).value as WebSearchProvider)">
@@ -159,10 +159,56 @@
           @change="settings.webSearch.apiKey = ($event.target as HTMLInputElement).value.trim()" />
       </div>
     </div>
+    <template v-if="settings.webSearch.provider === 'exa'">
+    <div class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">Exa 搜索强度</h3>
+        <p class="setting-description">{{ exaSearchMode.description }} 计费以<a href="https://exa.ai/pricing" @click.prevent="openWebSearchUrl('https://exa.ai/pricing')">官方价格</a>为准。</p>
+      </div>
+      <div class="setting-control">
+        <select class="form-input ws-select" aria-label="Exa 搜索强度" :value="settings.webSearch.exaType" @change="settings.webSearch.exaType = ($event.target as HTMLSelectElement).value as ExaSearchType">
+          <option v-for="mode in EXA_SEARCH_MODES" :key="mode.id" :value="mode.id">{{ mode.label }}</option>
+        </select>
+      </div>
+    </div>
+    <div class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">Exa 返回内容</h3>
+        <p class="setting-description">摘录：只返回和搜索词相关的片段，减少总结模型的输入；全文：返回网页正文开头部分。两者都按「每条结果最多字数」限制长度。</p>
+      </div>
+      <div class="setting-control">
+        <select class="form-input ws-select" aria-label="Exa 返回内容" :value="settings.webSearch.exaContent" @change="settings.webSearch.exaContent = ($event.target as HTMLSelectElement).value as 'highlights' | 'text'">
+          <option value="highlights">摘录</option>
+          <option value="text">全文</option>
+        </select>
+      </div>
+    </div>
+    </template>
+    <div v-if="settings.webSearch.provider === 'firecrawl'" class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">Firecrawl 抓取网页正文</h3>
+        <p class="setting-description">开启后会抓取搜索结果的网页正文，内容更全，也会增加积分消耗；关闭则只用搜索结果自带的摘要。</p>
+      </div>
+      <div class="setting-control">
+        <Toggle v-model="settings.webSearch.firecrawlScrape" variant="default" size="medium" />
+      </div>
+    </div>
+    <div v-if="settings.webSearch.provider === 'deepseek'" class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">DeepSeek 返回内容</h3>
+        <p class="setting-description">摘要：使用接口给模型准备的摘要；正文：额外返回网页正文，再按「每条结果最多字数」截断。DeepSeek 的搜索词最多 128 字，更长的题目会被截断。</p>
+      </div>
+      <div class="setting-control">
+        <select class="form-input ws-select" aria-label="DeepSeek 返回内容" :value="settings.webSearch.deepseekContent" @change="settings.webSearch.deepseekContent = ($event.target as HTMLSelectElement).value as 'summary' | 'content'">
+          <option value="summary">摘要</option>
+          <option value="content">正文</option>
+        </select>
+      </div>
+    </div>
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">搜索条数</h3>
-        <p class="setting-description">每次搜索取几条结果（1–10）。条数越多，给总结模型的资料越长、越慢；Firecrawl 每多一条结果多耗约 5 积分。默认 3。</p>
+        <p class="setting-description">每次搜索取几条结果（1–10），默认 3。条数越多，给总结模型的资料越长；实际费用取决于搜索服务、模式和是否抓取正文。</p>
       </div>
       <div class="setting-control timeout-control">
         <input type="number" class="form-input" min="1" max="10" step="1" :value="settings.webSearch.maxResults"
@@ -183,29 +229,6 @@
         </select>
       </div>
     </div>
-    <div class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">测试搜索</h3>
-        <p class="setting-description ws-test-result" :class="{ 'ws-test-error': webSearchTest.startsWith('错误') }">{{ webSearchTest || '用当前设置搜一次“中国的首都是哪个城市”，检查 Key 和网络是否可用（会消耗一次搜索额度）。' }}</p>
-      </div>
-      <div class="setting-control">
-        <button class="folder-action-btn select-folder-btn" :disabled="webSearchTesting" @click="testWebSearch">
-          {{ webSearchTesting ? '搜索中…' : '测试' }}
-        </button>
-      </div>
-    </div>
-    <div class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">高级参数</h3>
-        <p class="setting-description">一般不用改。</p>
-      </div>
-      <div class="setting-control">
-        <button class="folder-action-btn" @click="showWebSearchAdvanced = !showWebSearchAdvanced">
-          {{ showWebSearchAdvanced ? '收起' : '展开' }}
-        </button>
-      </div>
-    </div>
-    <template v-if="showWebSearchAdvanced">
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">每条结果最多字数</h3>
@@ -231,7 +254,7 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">搜索词最长字数</h3>
-        <p class="setting-description">题目（和选项）太长时截断。默认 300。</p>
+        <p class="setting-description">题目（和选项）太长时截断，默认 300。{{ settings.webSearch.provider === 'deepseek' ? 'DeepSeek 接口最多接受 128 字（含域名过滤），超出会进一步截断。' : '' }}</p>
       </div>
       <div class="setting-control timeout-control">
         <input type="number" class="form-input" min="20" max="500" step="10" :value="settings.webSearch.maxQueryChars"
@@ -252,63 +275,17 @@
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">不搜这些网站</h3>
-        <p class="setting-description">格式同上。Firecrawl 的“只搜”和“不搜”不能同时用，同时填了只用“只搜”。DeepSeek 会把域名写成 site: / -site: 搜索语法，和题目一起不超过 128 字，域名太多时不过滤。</p>
+        <p class="setting-description">格式同上。{{ webSearchDomainHint }}</p>
       </div>
       <div class="setting-control">
         <input type="text" class="form-input ws-wide" :value="settings.webSearch.excludeDomains" placeholder="可留空"
           @change="settings.webSearch.excludeDomains = ($event.target as HTMLInputElement).value.trim()" />
       </div>
     </div>
-    <div v-if="settings.webSearch.provider === 'firecrawl'" class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">抓取网页正文</h3>
-        <p class="setting-description">开启后每条结果会抓取网页正文（内容更全，每条多耗约 5 积分）；关闭则只用搜索结果自带的一小段摘要。</p>
-      </div>
-      <div class="setting-control">
-        <Toggle v-model="settings.webSearch.firecrawlScrape" variant="default" size="medium" />
-      </div>
-    </div>
-    <template v-if="settings.webSearch.provider === 'exa'">
-    <div class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">Exa 搜索模式</h3>
-        <p class="setting-description">auto 约 1 秒；instant / fast 更快；deep 系列更准但慢很多、更贵，不建议。</p>
-      </div>
-      <div class="setting-control">
-        <select class="form-input ws-select" :value="settings.webSearch.exaType" @change="settings.webSearch.exaType = ($event.target as HTMLSelectElement).value as any">
-          <option v-for="t in EXA_SEARCH_TYPES" :key="t" :value="t">{{ t }}</option>
-        </select>
-      </div>
-    </div>
-    <div class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">Exa 返回内容</h3>
-        <p class="setting-description">摘录：只返回和搜索词相关的片段，更精简；全文：返回网页正文开头部分。</p>
-      </div>
-      <div class="setting-control">
-        <select class="form-input ws-select" :value="settings.webSearch.exaContent" @change="settings.webSearch.exaContent = ($event.target as HTMLSelectElement).value as 'highlights' | 'text'">
-          <option value="highlights">摘录</option>
-          <option value="text">全文</option>
-        </select>
-      </div>
-    </div>
-    </template>
-    <div v-if="settings.webSearch.provider === 'deepseek'" class="setting-item">
-      <div class="setting-info">
-        <h3 class="setting-title">DeepSeek 返回内容</h3>
-        <p class="setting-description">摘要：每条约 600–800 字、专门给模型阅读的摘要，够用且更快；正文：额外返回网页正文（再按“每条结果最多字数”截断），不额外计费。DeepSeek 的搜索词最多 128 字，更长的题目会被截断。</p>
-      </div>
-      <div class="setting-control">
-        <select class="form-input ws-select" :value="settings.webSearch.deepseekContent" @change="settings.webSearch.deepseekContent = ($event.target as HTMLSelectElement).value as 'summary' | 'content'">
-          <option value="summary">摘要</option>
-          <option value="content">正文</option>
-        </select>
-      </div>
-    </div>
     <div class="setting-item">
       <div class="setting-info">
         <h3 class="setting-title">服务地址</h3>
-        <p class="setting-description">留空用官方地址。自建 Firecrawl 或用中转时填写，例如 https://firecrawl.example.com。</p>
+        <p class="setting-description">留空使用 {{ webSearchProvider.baseUrl }}。{{ settings.webSearch.provider === 'firecrawl' ? '自建服务或中转时填写对应地址。' : '使用中转时填写对应地址。' }}</p>
       </div>
       <div class="setting-control">
         <input type="text" class="form-input ws-wide" :value="settings.webSearch.baseUrl" placeholder="留空使用官方地址"
@@ -325,7 +302,17 @@
           @change="settings.webSearch.proxyUrl = ($event.target as HTMLInputElement).value.trim()" />
       </div>
     </div>
-    </template>
+    <div class="setting-item">
+      <div class="setting-info">
+        <h3 class="setting-title">测试搜索</h3>
+        <p class="setting-description ws-test-result" :class="{ 'ws-test-error': webSearchTest.startsWith('错误') }" role="status">{{ webSearchTest || '用当前设置搜一次“中国的首都是哪个城市”，检查 Key 和网络是否可用（会消耗一次搜索额度）。' }}</p>
+      </div>
+      <div class="setting-control">
+        <button class="folder-action-btn select-folder-btn" :disabled="webSearchTesting" @click="testWebSearch">
+          {{ webSearchTesting ? '搜索中…' : '测试' }}
+        </button>
+      </div>
+    </div>
     </template>
     </div>
 
@@ -405,7 +392,7 @@ import { useSettingsManager } from '../../composables/useSettingsManager'
 
 import { useTheme } from '../../composables/useTheme'
 import { environmentDetector } from '../../services/environmentDetector'
-import { EXA_SEARCH_TYPES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, switchWebSearchProvider, type WebSearchProvider } from '../../services/webSearch'
+import { EXA_SEARCH_MODES, WEB_SEARCH_PROVIDERS, normalizeWebSearchConfig, runWebSearch, switchWebSearchProvider, type ExaSearchType, type WebSearchProvider } from '../../services/webSearch'
 import ThemeSwitch from './GeneralSettings/ThemeSwitch.vue'
 import Toggle from '../../components/Toggle.vue'
 import FolderPickerDialog from '../../components/FolderPickerDialog.vue'
@@ -482,16 +469,21 @@ const handleSettingChange = (key: keyof import('../../services/settings').AppSet
 
 
 // 联网搜索
-const showWebSearchAdvanced = ref(false)
 const webSearchTest = ref('')
 const webSearchTesting = ref(false)
+const webSearchProvider = computed(() => WEB_SEARCH_PROVIDERS.find(provider => provider.id === settings.value.webSearch.provider) || WEB_SEARCH_PROVIDERS[0])
+const exaSearchMode = computed(() => EXA_SEARCH_MODES.find(mode => mode.id === settings.value.webSearch.exaType) || EXA_SEARCH_MODES.find(mode => mode.id === 'auto')!)
+const webSearchDomainHint = computed(() => {
+  if (settings.value.webSearch.provider === 'firecrawl') return '“只搜”和“不搜”不能同时用，同时填了优先使用“只搜”。'
+  if (settings.value.webSearch.provider === 'deepseek') return '域名会转换成 site: / -site: 搜索语法，和题目一起不超过 128 字；域名太多、题目剩余空间不足时不过滤。'
+  return '可以同时限定搜索网站和排除网站。'
+})
 const changeWebSearchProvider = (provider: WebSearchProvider) => {
   settings.value.webSearch = switchWebSearchProvider(settings.value.webSearch, provider)
   webSearchTest.value = ''
 }
-const webSearchKeyUrl = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.id === settings.value.webSearch.provider)?.keyUrl || '#')
-const openWebSearchKeyUrl = async () => {
-  const url = webSearchKeyUrl.value
+const webSearchKeyUrl = computed(() => webSearchProvider.value.keyUrl)
+const openWebSearchUrl = async (url: string) => {
   try {
     const { openUrl } = await import('@tauri-apps/plugin-opener')
     await openUrl(url)
@@ -783,6 +775,26 @@ onMounted(() => {
 
 .ws-test-error {
   color: #e53e3e;
+}
+
+@media (max-width: 720px) {
+  .web-search-group .setting-item {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .web-search-group .setting-info {
+    flex-basis: 100%;
+    margin-right: 0;
+  }
+
+  .web-search-group .setting-control {
+    max-width: 100%;
+  }
+
+  .web-search-group .ws-wide {
+    width: min(260px, 100%);
+  }
 }
 
 .setting-description a {

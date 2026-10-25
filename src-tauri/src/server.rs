@@ -70,9 +70,11 @@ fn model_wait_budget_from_config(cfg: &serde_json::Value, has_url: bool) -> (u64
         .map(|search| search.get("timeoutSec").and_then(|v| v.as_u64()).unwrap_or(20).clamp(3, 120))
         .unwrap_or(0);
     let inactivity = timeout.max(search_timeout).saturating_add(20).max(30);
-    // 答题和总结顺序执行，各自可重试；附件读取另有一个单次超时。
+    // 答题和总结每次重试都可能重新准备图片；文件读取另有一个单次超时。
     let absolute = timeout
-        .saturating_mul(2 * (retries + 1) + 1)
+        .saturating_add(timeout.min(30))
+        .saturating_mul(2 * (retries + 1))
+        .saturating_add(timeout)
         .saturating_add(search_timeout)
         .saturating_add(2 * retries * 2) // 两阶段的重试退避，每次最多 2 秒
         .saturating_add(if has_url { 90 } else { 60 })
@@ -211,12 +213,13 @@ fn build_query_data(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuestionKind {
     Single,
     Multiple,
     Judgement,
     Completion,
+    General,
 }
 
 impl QuestionKind {
@@ -226,57 +229,30 @@ impl QuestionKind {
             QuestionKind::Multiple => "多选",
             QuestionKind::Judgement => "判断",
             QuestionKind::Completion => "填空",
+            QuestionKind::General => "问答",
         }
     }
 
     fn prompt_hint(&self) -> &'static str {
         match self {
             QuestionKind::Single => {
-                "这是单选题，只有一个正确答案。answer 只能写正确选项的完整文字（与【选项】原文一致），禁止写 A/B/C/D，也禁止写成「B. 传动角」这种带字母前缀的形式，应直接写「传动角」。"
+                "answer 为正确选项的正文。"
             }
             QuestionKind::Multiple => {
-                "这是多选题，可能有多个正确答案。answer 只写各正确选项的完整文字，用 ### 连接（顺序不限）。禁止写 ABD，禁止写「A. xxx###C. yyy」这种带字母前缀的形式。"
+                "answer 为各正确选项的正文，以 ### 连接。"
             }
             QuestionKind::Judgement => {
-                "这是判断题。answer 只能是「正确」或「错误」二字之一。禁止写 A/B，禁止写「A. 正确」。"
+                "answer 为「正确」或「错误」。"
             }
             QuestionKind::Completion => {
-                "这是填空题。answer 只填空白处应填的内容本身；若有多个空，用 ### 连接。不要加第1空/①/A. 等序号前缀。"
+                "answer 按空位顺序填写，多个空以 ### 连接。"
+            }
+            QuestionKind::General => {
+                "answer 为完整文字及必要推导，按小问顺序编号，段落以 \\n 换行。"
             }
         }
     }
 
-    /// 题型对应的典型对答示例（写入 prompt；前端也会以多轮对话注入）
-    fn few_shot_block(&self) -> &'static str {
-        match self {
-            QuestionKind::Single => {
-                "【作答示例】\n\
-题目：凸轮机构中从动件运动规律取决于（ ）。\n\
-选项：A. 压力角  B. 传动角  C. 极力夹角\n\
-正确输出：{\"answer\": \"传动角\"}\n\
-错误输出：{\"answer\": \"B. 传动角\"} 或 {\"answer\": \"B\"}\n"
-            }
-            QuestionKind::Multiple => {
-                "【作答示例】\n\
-题目：下列属于输入设备的有（ ）。\n\
-选项：A. 键盘  B. 显示器  C. 鼠标  D. 打印机\n\
-正确输出：{\"answer\": \"键盘###鼠标\"}\n\
-错误输出：{\"answer\": \"AC\"} 或 {\"answer\": \"A. 键盘###C. 鼠标\"}\n"
-            }
-            QuestionKind::Judgement => {
-                "【作答示例】\n\
-题目：地球绕太阳公转一周约为 365 天。\n\
-正确输出：{\"answer\": \"正确\"}\n\
-错误输出：{\"answer\": \"A\"} 或 {\"answer\": \"A. 正确\"}\n"
-            }
-            QuestionKind::Completion => {
-                "【作答示例】\n\
-题目：中国的首都是____，最大的城市是____。\n\
-正确输出：{\"answer\": \"北京###上海\"}\n\
-错误输出：{\"answer\": \"第1空：北京###第2空：上海\"}\n"
-            }
-        }
-    }
 }
 
 fn detect_question_kind(query_type: &str) -> Option<QuestionKind> {
@@ -302,6 +278,11 @@ fn detect_question_kind(query_type: &str) -> Option<QuestionKind> {
         Some(QuestionKind::Judgement)
     } else if normalized.contains("completion") || trimmed.contains("填空") {
         Some(QuestionKind::Completion)
+    } else if regex::Regex::new(r"问答|简答|论述|解答|计算|证明|分析|主观|名词解释|essay|short[ _-]?(?:answer)?|free[ _-]?response|open[ _-]?ended")
+        .unwrap()
+        .is_match(&normalized)
+    {
+        Some(QuestionKind::General)
     } else {
         None
     }
@@ -312,22 +293,12 @@ fn build_model_query_prompt(
     options: Option<&str>,
     query_type: Option<&str>,
 ) -> String {
-    let mut q = String::from(
-        "你是一个专业的答题助手。请按以下要求作答：\n"
-    );
-
-    q.push_str("1. 先在内部完成审题与推理（可简要），再给出最终答案。\n");
-    q.push_str("2. 最后一行输出**唯一**一个 JSON 对象，不要用 markdown 代码块包裹，JSON 前后不要附加说明。\n");
-    q.push_str("3. JSON 格式严格为：{\"answer\": \"最终答案\"}\n");
-    q.push_str("4. answer 只写答案正文本身：选择题必须与【选项】中去掉「A.」「B.」后的文字完全一致；判断题只写「正确」或「错误」；填空题只写填空内容。\n");
-    q.push_str("5. 严禁把选项字母写进 answer：不要写 A/B/C/D，不要写「B. 传动角」「D. meeting」，应直接写「传动角」「meeting」。不要把分析过程写进 answer。\n\n");
+    let mut q = String::from("按题型作答，仅输出一个 JSON 对象：{\"answer\":\"答案正文\"}。\n");
 
     if let Some(raw_type) = query_type.map(str::trim).filter(|value| !value.is_empty()) {
         if let Some(kind) = detect_question_kind(raw_type) {
             q.push_str(&format!("【题目类型：{}题】\n", kind.chinese_name()));
             q.push_str(&format!("提示：{}\n", kind.prompt_hint()));
-            q.push_str(kind.few_shot_block());
-            q.push('\n');
         } else {
             q.push_str(&format!("【题目类型字段：{}】\n", raw_type));
         }
@@ -339,7 +310,7 @@ fn build_model_query_prompt(
         q.push_str(&format!("【选项】\n{}\n", options));
     }
 
-    q.push_str("\n请作答，并在最后输出答案 JSON：");
+    q.push_str("\n请作答：");
 
     q
 }
@@ -460,9 +431,10 @@ async fn wait_and_store_ai_answer(
             extracted_answer = extracted_answer.trim().to_string();
             // 去掉 A./B. 前缀，纯字母映射为选项正文，避免返回/入库带序号的答案
             let before_norm = extracted_answer.clone();
-            extracted_answer = normalize_answer_against_options(
+            extracted_answer = normalize_answer_for_question(
                 &extracted_answer,
                 request.options.as_deref(),
+                request.query_type.as_deref(),
             );
             if extracted_answer != before_norm {
                 println!(
@@ -539,9 +511,10 @@ async fn resolve_query_with_same_question_check(
             let data_list: Vec<QueryData> = exact_hits
                 .into_iter()
                 .map(|m| {
-                    let answer = normalize_answer_against_options(
+                    let answer = normalize_answer_for_question(
                         &m.answer,
                         request.options.as_deref(),
+                        request.query_type.as_deref(),
                     );
                     build_query_data(
                         request_origin,
@@ -610,9 +583,10 @@ async fn resolve_query_with_same_question_check(
                 }
                 if let Some(matched_id) = parse_same_question_result(&judge_content) {
                     if let Some(matched) = candidates.iter().find(|c| c.id == matched_id).cloned() {
-                        let answer = normalize_answer_against_options(
+                        let answer = normalize_answer_for_question(
                             &matched.answer,
                             request.options.as_deref(),
+                            request.query_type.as_deref(),
                         );
                         let response_id = if should_auto_add_to_question_bank() {
                             match insert_ai_response(
@@ -660,9 +634,10 @@ async fn resolve_query_with_same_question_check(
                         .ok()
                         .filter(|m| m.image_hash.as_deref().filter(|h| !h.is_empty()) == image_hash.as_deref())
                     {
-                        let answer = normalize_answer_against_options(
+                        let answer = normalize_answer_for_question(
                             &matched.answer,
                             request.options.as_deref(),
+                            request.query_type.as_deref(),
                         );
                         let response_id = if should_auto_add_to_question_bank() {
                             match insert_ai_response(
@@ -1532,6 +1507,36 @@ fn strip_leading_option_label(text: &str, map: &HashMap<char, String>) -> String
     trimmed.to_string()
 }
 
+/// 主观题保留编号和段落，仅修复代码之外误用的多空分隔符。
+fn normalize_long_form_answer(answer: &str) -> String {
+    let code = regex::Regex::new(r"(?s)```.*?```|`[^`\n]*`").unwrap();
+    let inline = regex::Regex::new(r"(\S)[ \t]*###[ \t]*").unwrap();
+    let separator = regex::Regex::new(r"(?m)^[ \t]*###[ \t]*(?:\r?\n|$)").unwrap();
+    let heading = regex::Regex::new(r"(?m)^[ \t]*###[ \t]+").unwrap();
+    let normalize_text = |text: &str| {
+        let text = inline.replace_all(text, "$1\n");
+        let text = separator.replace_all(&text, "\n");
+        heading.replace_all(&text, "").into_owned()
+    };
+    let mut result = String::new();
+    let mut last = 0;
+    for span in code.find_iter(answer) {
+        result.push_str(&normalize_text(&answer[last..span.start()]));
+        result.push_str(span.as_str());
+        last = span.end();
+    }
+    result.push_str(&normalize_text(&answer[last..]));
+    result.trim().to_string()
+}
+
+fn normalize_answer_for_question(answer: &str, options: Option<&str>, query_type: Option<&str>) -> String {
+    if query_type.and_then(detect_question_kind) == Some(QuestionKind::General) {
+        normalize_long_form_answer(answer)
+    } else {
+        normalize_answer_against_options(answer, options)
+    }
+}
+
 /// 将模型/题库答案规范为选项正文（去字母前缀，纯字母映射）
 fn normalize_answer_against_options(answer: &str, options: Option<&str>) -> String {
     let raw = answer.trim();
@@ -1813,6 +1818,26 @@ mod same_question_tests {
     };
 
     #[test]
+    fn essay_prompts_and_saved_answers_keep_subquestion_paragraphs() {
+        use super::{build_model_query_prompt, detect_question_kind, normalize_answer_for_question, QuestionKind};
+        for kind in ["简答题", "问答题", "论述题", "计算题", "essay", "short_answer"] {
+            assert_eq!(detect_question_kind(kind), Some(QuestionKind::General));
+            let prompt = build_model_query_prompt("（1）解释甲。（2）解释乙。", None, Some(kind));
+            assert!(prompt.contains("【题目类型：问答题】"));
+            assert!(prompt.contains("按小问顺序编号"));
+            assert!(!prompt.contains("不要"));
+            assert!(!prompt.contains("禁止"));
+            assert!(!prompt.contains("作答示例"));
+            let normalized = normalize_answer_for_question("A. 先解释甲。###B. 再解释乙。", Some("A. 补充材料"), Some(kind));
+            assert_eq!(normalized, "A. 先解释甲。\nB. 再解释乙。");
+        }
+        let code = "使用 `###` 字面量。\n```txt\n甲###乙\n```";
+        assert_eq!(normalize_answer_for_question(code, None, Some("问答题")), code);
+        assert_eq!(normalize_answer_for_question("甲###乙", None, Some("completion")), "甲###乙");
+        assert_eq!(normalize_answer_for_question("AB", Some("A. 甲\nB. 乙"), Some("multiple")), "甲###乙");
+    }
+
+    #[test]
     fn wait_budget_covers_answer_search_summary_and_retries() {
         let cfg = serde_json::json!({
             "modelResponseTimeout": 40, "modelRetryCount": 2,
@@ -1823,8 +1848,16 @@ mod same_question_tests {
         assert!(absolute >= 40 * 3 * 2 + 40 + 120 + 8 + 60);
         let disabled = serde_json::json!({"modelResponseTimeout": 5, "modelRetryCount": 0,
             "webSearch": {"enabled": false, "timeoutSec": 120}});
-        assert_eq!(super::model_wait_budget_from_config(&disabled, false), (30, 75));
-        assert_eq!(super::model_wait_budget_from_config(&disabled, true), (30, 105));
+        assert_eq!(super::model_wait_budget_from_config(&disabled, false), (30, 85));
+        assert_eq!(super::model_wait_budget_from_config(&disabled, true), (30, 115));
+    }
+
+    #[test]
+    fn wait_budget_covers_image_preparation_on_every_model_attempt() {
+        let cfg = serde_json::json!({"modelResponseTimeout": 40, "modelRetryCount": 10});
+        let (_, absolute) = super::model_wait_budget_from_config(&cfg, false);
+        let model_and_images = (40 + 30) * 11 * 2;
+        assert!(absolute >= model_and_images + 40 + 40 + 60);
     }
 
 

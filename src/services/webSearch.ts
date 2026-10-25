@@ -3,7 +3,7 @@
 import { validateProxyUrl } from './providerTransport'
 
 export type WebSearchProvider = 'firecrawl' | 'exa' | 'deepseek'
-export type ExaSearchType = 'auto' | 'fast' | 'instant' | 'deep-lite' | 'deep'
+export type ExaSearchType = 'lite' | 'auto' | 'fast' | 'instant' | 'deep-lite' | 'deep' | 'deep-reasoning'
 export type ExaContentMode = 'highlights' | 'text'
 export type DeepSeekContentMode = 'summary' | 'content'
 export type SearchOptionsMode = 'never' | 'auto' | 'always'
@@ -76,7 +76,18 @@ export const WEB_SEARCH_PROVIDERS: { id: WebSearchProvider; name: string; baseUr
 
 const providerName = (provider: WebSearchProvider) => WEB_SEARCH_PROVIDERS.find(p => p.id === provider)!.name
 
-export const EXA_SEARCH_TYPES: ExaSearchType[] = ['auto', 'fast', 'instant', 'deep-lite', 'deep']
+/** 搜索模式与计费说明核对于 2026-10-25：https://exa.ai/docs/reference/search / https://exa.ai/pricing */
+export const EXA_SEARCH_MODES: { id: ExaSearchType; label: string; description: string }[] = [
+  { id: 'lite', label: 'lite · 经济快速', description: '低成本、低延迟，适合日常题目核对。每 1000 次搜索 4 美元（每次最多 10 条结果）；使用定期更新的索引，不在搜索时实时抓取网页。' },
+  { id: 'auto', label: 'auto · 均衡（默认）', description: '兼顾质量与速度，在检索和排序上投入更多计算。每 1000 次搜索 7 美元（每次最多 10 条结果）。' },
+  { id: 'deep-lite', label: 'deep-lite · 轻量研究', description: '对搜索结果进一步研究并综合资料，耗时比普通检索更长。可按需要增加搜索超时。' },
+  { id: 'deep', label: 'deep · 深度研究', description: '进行多步检索与综合，适合复杂问题。每 1000 次搜索 12 美元（每次最多 10 条结果）；需要预留更长的搜索和总结时间。' },
+  { id: 'fast', label: 'fast · 旧版快速', description: '保留旧配置兼容；Exa 官方现建议使用 lite。' },
+  { id: 'instant', label: 'instant · 旧版极速', description: '保留旧配置兼容；Exa 官方现建议使用 lite。' },
+  { id: 'deep-reasoning', label: 'deep-reasoning · 旧版深度推理', description: '保留旧配置兼容；Exa 官方现建议使用 deep。' }
+]
+
+export const EXA_SEARCH_TYPES: ExaSearchType[] = EXA_SEARCH_MODES.map(mode => mode.id)
 
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Math.floor(Number(value))
@@ -418,5 +429,5 @@ export { extractComparableAnswer, answersDisagree } from '../utils/answerConsens
 
 /** 总结提示词里搜索资料那一段 */
 export function buildSearchContextBlock(text: string): string {
-  return `联网搜索资料（仅供核对答案参考，可能与题目无关或有误，以题目本身和各模型的回答为准；最终答案里不要出现链接和来源）：\n${text}`
+  return `联网搜索资料（仅供核对，以原题为准）：\n${text}`
 }

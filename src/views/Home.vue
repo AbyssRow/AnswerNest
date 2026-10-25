@@ -547,7 +547,7 @@ import {
 } from '../utils/urlQuestion'
 import { normalizeAnswerJsonContent } from '../utils/answerNormalize'
 import { buildAnswerChatMessages } from '../utils/answerFewShot'
-import { findImageUrls, loadQuestionFileText, pickAnswerModels, questionHasImages } from '../utils/questionAttachments'
+import { findImageUrls, loadQuestionFileText, loadQuestionImages, pickAnswerModels, questionHasImages, waitForAttachment } from '../utils/questionAttachments'
 import { callDecisionModel, decisionCanAnswer } from '../services/decisionApi'
 import { normalizeApiProtocol } from '../services/modelProtocol'
 import { runAnswerWorkflow } from '../services/answerWorkflow'
@@ -1982,7 +1982,8 @@ const getReasoningContentValue = (payload: any): string => {
 
 const enrichAnswerMessages = async (
   messages: Array<{ role: string; content: any }>,
-  media?: { images?: string[]; attachImages?: boolean; fileText?: string }
+  media?: { images?: string[]; attachImages?: boolean; fileText?: string },
+  signal?: AbortSignal
 ) => {
   if (!media?.fileText && !media?.attachImages) return messages
   const copy = messages.map(message => ({ ...message }))
@@ -1996,21 +1997,9 @@ const enrichAnswerMessages = async (
   }
   const imageUrls = [...new Set([...(media.images || []), ...findImageUrls(text)].filter(Boolean))]
   const parts: any[] = [{ type: 'text', text }]
-  const failed: string[] = []
-  for (const url of imageUrls) {
-    try {
-      const data = url.startsWith('data:') ? url : await fetchQuestionImageBase64(url)
-      if (!data) throw new Error('empty')
-      parts.push({ type: 'image_url', image_url: { url: data, detail: 'high' } })
-    } catch {
-      failed.push(url)
-    }
-  }
-  if (failed.length && parts.length === 1) {
-    throw new Error(`图片下载失败：${failed.join('，')}`)
-  }
-  if (failed.length) {
-    parts[0].text += `\n\n（以下图片未能附上：${failed.join('，')}）`
+  const images = await loadQuestionImages(imageUrls, fetchQuestionImageBase64, { signal })
+  for (const data of images) {
+    parts.push({ type: 'image_url', image_url: { url: data, detail: 'high' } })
   }
   last.content = await prepareVisionRequestContent(parts)
   return copy
@@ -2079,9 +2068,23 @@ const callModelWithStreaming = async (
     throw new Error('未找到模型所属平台')
   }
 
+  // 图片准备单独限时，重试也纳入预算，并响应用户取消。
+  const { settings: appSettings } = useSettings()
+  const imageTimeoutSec = Math.min(appSettings.modelResponseTimeout ?? 40, 30)
+  const imageController = new AbortController()
+  registerAbortController(requestId, imageController)
+  const imageTimer = setTimeout(() => imageController.abort(new DOMException(`题目图片准备超时（${imageTimeoutSec} 秒）`, 'TimeoutError')), imageTimeoutSec * 1000)
+  let messages: Array<{ role: string; content: any }>
+  try {
+    messages = await waitForAttachment(enrichAnswerMessages(buildAnswerChatMessages(query), media, imageController.signal), imageController.signal)
+  } finally {
+    clearTimeout(imageTimer)
+    unregisterAbortController(requestId, imageController)
+  }
+
   // 构建测试输入数据（普通答题注入典型例题多轮对话）
   const testInput: any = {
-    messages: await enrichAnswerMessages(buildAnswerChatMessages(query), media),
+    messages,
     model: runtimeModelId,
     stream: true,
     tools: []
@@ -2098,7 +2101,6 @@ const callModelWithStreaming = async (
   }
 
   // 读取超时配置（秒转毫秒）
-  const { settings: appSettings } = useSettings()
   const timeoutMs = (appSettings.modelResponseTimeout ?? 40) * 1000
 
   // AbortController 用于超时中断 fetch
@@ -2858,11 +2860,11 @@ const callModelAPI = async (requestId: string, query: string) => {
         finalizeMultiModelReasoning(requestId, model.id)
         return {
           model,
-          response: strippedResponse,
+          response,
           success: true
         }
       } catch (error) {
-        if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
+        if (isRequestCancelled(requestId)) {
           return null // cancelled
         }
         const errText = `错误: ${formatModelCallError(error)}`
@@ -2941,12 +2943,12 @@ const callModelAPI = async (requestId: string, query: string) => {
           finalizeMultiModelReasoning(requestId, summaryKey)
           return {
             model,
-            response: strippedResponse,
+            response,
             success: true
           }
 
         } catch (error) {
-          if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
+          if (isRequestCancelled(requestId)) {
             throw createCancelledRequestError()
           }
           const errText = `错误: ${formatModelCallError(error, '总结失败')}`
@@ -2974,7 +2976,7 @@ const callModelAPI = async (requestId: string, query: string) => {
       sourceKey ? getRequestReasoningForBackend(requestId, sourceKey) : ''
     )
   } catch (error) {
-    if (isAbortLikeError(error) || isRequestCancelled(requestId)) {
+    if (isRequestCancelled(requestId)) {
       return
     }
 
@@ -3050,14 +3052,17 @@ const getRequestReasoningForBackend = (requestId: string, modelId?: string): str
   return ''
 }
 
-const getRequestOptionsFromLog = (requestId: string): string => {
+const getRequestAnswerContextFromLog = (requestId: string): { options: string; kind?: string } => {
   const log = requestLogs.value.find(l => l.id === requestId)
-  if (!log?.requestBody) return ''
+  if (!log?.requestBody) return { options: '' }
   try {
     const parsed = JSON.parse(log.requestBody)
-    return typeof parsed.options === 'string' ? parsed.options : ''
+    return {
+      options: typeof parsed.options === 'string' ? parsed.options : '',
+      kind: typeof parsed.type === 'string' ? parsed.type : typeof parsed.questionType === 'string' ? parsed.questionType : undefined
+    }
   } catch {
-    return ''
+    return { options: '' }
   }
 }
 
@@ -3097,10 +3102,10 @@ const sendModelResponseToBackend = async (requestId: string, content: string, is
     return
   }
 
-  // 去掉 A./B. 前缀，纯字母映射为选项正文，避免 OCS 收到带序号的答案
-  const options = getRequestOptionsFromLog(requestId)
+  // 选择题映射选项正文；主观题保留小问编号和完整段落。
+  const context = getRequestAnswerContextFromLog(requestId)
   const normalizedContent = isSuccess
-    ? normalizeAnswerJsonContent(content, options)
+    ? normalizeAnswerJsonContent(content, context.options, context.kind)
     : content
 
   // 先停心跳，避免错误宽限期内仍被 keepalive 拖住观感

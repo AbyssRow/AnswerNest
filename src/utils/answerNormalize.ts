@@ -1,3 +1,15 @@
+/** 明确的主观题才按段落处理；未知题型仍保留原有兼容行为。 */
+export const isLongFormQuestion = (kind?: string | null): boolean =>
+  /问答|简答|论述|解答|计算|证明|分析|主观|名词解释|essay|short[ _-]?(?:answer)?|free[ _-]?response|open[ _-]?ended/i.test(kind || '')
+
+/** 修复模型误用的多空分隔符，保留小问顺序、段落和代码中的字面量。 */
+export const normalizeLongFormAnswer = (answer: string): string =>
+  answer.split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((part, index) => index % 2 ? part : part
+    .replace(/(\S)[ \t]*###[ \t]*/g, '$1\n')
+    .replace(/^[ \t]*###[ \t]*(?:\r?\n|$)/gm, '\n')
+    .replace(/^[ \t]*###[ \t]+/gm, '')
+  ).join('').trim()
+
 /** 从选项文本解析 A/B/C → 选项正文 */
 export const parseOptionLetterMap = (options: string | undefined | null): Map<string, string> => {
   const map = new Map<string, string>()
@@ -66,10 +78,12 @@ export const stripLeadingOptionLabel = (
  */
 export const normalizeAnswerAgainstOptions = (
   answer: string,
-  options?: string | null
+  options?: string | null,
+  questionType?: string | null
 ): string => {
   const raw = (answer || '').trim()
   if (!raw) return ''
+  if (isLongFormQuestion(questionType)) return normalizeLongFormAnswer(raw)
 
   const map = parseOptionLetterMap(options)
   const parts = raw.includes('###') ? raw.split('###') : [raw]
@@ -101,7 +115,8 @@ export const normalizeAnswerAgainstOptions = (
 /** 若 content 是 {"answer":"..."} JSON，则规范化其中的 answer */
 export const normalizeAnswerJsonContent = (
   content: string,
-  options?: string | null
+  options?: string | null,
+  questionType?: string | null
 ): string => {
   const trimmed = (content || '').trim()
   if (!trimmed) return trimmed
@@ -110,7 +125,7 @@ export const normalizeAnswerJsonContent = (
     try {
       const obj = JSON.parse(text)
       if (obj && typeof obj === 'object' && typeof obj.answer === 'string') {
-        const next = normalizeAnswerAgainstOptions(obj.answer, options)
+        const next = normalizeAnswerAgainstOptions(obj.answer, options, questionType)
         if (next !== obj.answer) {
           return JSON.stringify({ ...obj, answer: next })
         }
@@ -147,7 +162,7 @@ export const normalizeAnswerJsonContent = (
 
   // 非 JSON：整段当答案规范化
   if (!trimmed.startsWith('{') && !trimmed.startsWith('错误:')) {
-    return normalizeAnswerAgainstOptions(trimmed, options)
+    return normalizeAnswerAgainstOptions(trimmed, options, questionType)
   }
   return trimmed
 }
